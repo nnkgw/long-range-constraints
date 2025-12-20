@@ -497,7 +497,7 @@ void display() {
 
     glMultMatrixf(glm::value_ptr(T));
 
-    if (i == 0) glColor3f(0.9f, 0.6f, 0.2f);
+    if (i == 0) glColor3f(0.9f, 0.6f, 0.2f); // Fixed
     else        glColor3f(0.8f, 0.8f, 0.9f);
 
     drawBoxWire(b.halfExtents);
@@ -517,7 +517,7 @@ void display() {
     glm::vec3 p0 = jointWorldPos(0);
     glLineWidth(2.0f);
     glBegin(GL_LINES);
-    glColor3f(0.2f, 0.9f, 0.2f);
+    glColor3f(0.2f, 0.9f, 0.2f); // LRC violation debug
     for (int j = 1; j < (int)g_joints.size(); ++j) {
       glm::vec3 pj = jointWorldPos(j);
       glm::vec3 d = pj - p0;
@@ -612,31 +612,28 @@ void keyboard(unsigned char key, int /*x*/, int /*y*/) {
 }
 
 void idle() {
-  static int lastTms = 0;
-  static float acc = 0.0f;
+  // Fixed-step pacing:
+  // - Always advance exactly one simulation step with g_dt.
+  // - Then wait until g_dt seconds have elapsed since this idle call started.
+  // - If the machine is too slow, the wait is skipped and animation slows down.
+  const int frameStartMs = glutGet(GLUT_ELAPSED_TIME);
 
-  int now = glutGet(GLUT_ELAPSED_TIME);
-  if (lastTms == 0) lastTms = now;
-  int dtms = now - lastTms;
-  lastTms = now;
-
-  acc += (float)dtms / 1000.0f;
-
-  float simStart = (float)glutGet(GLUT_ELAPSED_TIME);
-
-  int steps = 0;
-  while (acc >= g_dt && steps < 4) {
-    simulateStep(g_dt);
-    acc -= g_dt;
-    ++steps;
-  }
-
-  float simEnd = (float)glutGet(GLUT_ELAPSED_TIME);
+  const float simStart = (float)glutGet(GLUT_ELAPSED_TIME);
+  simulateStep(g_dt);
+  const float simEnd = (float)glutGet(GLUT_ELAPSED_TIME);
   g_lastSimMs = (simEnd - simStart);
 
   updateWindowTitle();
   glutPostRedisplay();
+
+  const int dtMs = std::max(1, (int)std::floor(g_dt * 1000.0f + 0.5f));
+  const int targetEndMs = frameStartMs + dtMs;
+
+  while (glutGet(GLUT_ELAPSED_TIME) < targetEndMs) {
+    // spin
+  }
 }
+
 
 int main(int argc, char** argv) {
   glutInit(&argc, argv);
