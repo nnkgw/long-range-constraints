@@ -1,8 +1,4 @@
-﻿// lrc_min.cpp - Minimal Long Range Constraints demo (rigid body chain)
-// Build (examples):
-//   Linux:   g++ -std=c++17 lrc_min.cpp -lGL -lGLU -lglut -O2
-//   macOS:   clang++ -std=c++17 lrc_min.cpp -framework OpenGL -framework GLUT -O2
-//   Windows: cl /EHsc /std:c++17 lrc_min.cpp freeglut.lib opengl32.lib glu32.lib
+﻿// Long Range Constraints demo (rigid body chain)
 #if defined(WIN32)
 #pragma warning(disable:4996)
 #include <GL/freeglut.h>
@@ -36,24 +32,20 @@
 #include <cmath>
 #include <algorithm>
 
-using glm::vec3;
-using glm::mat3;
-using glm::quat;
-
 static const float kPi = 3.14159265358979323846f;
 
 static float g_dt = 1.0f / 60.0f;
-static vec3  g_gravity(0.0f, -9.8f, 0.0f);
+static glm::vec3 g_gravity(0.0f, -9.8f, 0.0f);
 
-static int   g_numBodies = 16;
-static int   g_iters = 8;
+static int g_numBodies = 16;
+static int g_iters = 8;
 
-static bool  g_useLRC = true;
+static bool g_useLRC = true;
 
 static float g_jointCompliance = 0.0f;
 static float g_lrcCompliance = 0.0f;
 
-static vec3  g_boxHalf(0.05f, 0.12f, 0.05f);
+static glm::vec3 g_boxHalf(0.05f, 0.12f, 0.05f);
 
 static float camDist = 2.5f;
 static float camYaw = 0.0f;
@@ -70,91 +62,95 @@ static float clampf(float x, float a, float b) {
   return std::max(a, std::min(b, x));
 }
 
-static quat integrateOrientation(const quat& q, const vec3& wWorld, float dt) {
-  quat wq(0.0f, wWorld.x, wWorld.y, wWorld.z);
-  quat dq = 0.5f * wq * q;
-  quat q2 = q + dq * dt;
+static glm::quat integrateOrientation(const glm::quat& q, const glm::vec3& wWorld, float dt) {
+  glm::quat wq(0.0f, wWorld.x, wWorld.y, wWorld.z);
+  glm::quat dq = 0.5f * wq * q;
+  glm::quat q2 = q + dq * dt;
   return glm::normalize(q2);
 }
 
-static void applySmallRotation(quat& q, const vec3& dthetaWorld) {
-  quat dq(0.0f, dthetaWorld.x, dthetaWorld.y, dthetaWorld.z);
+static void applySmallRotation(glm::quat& q, const glm::vec3& dthetaWorld) {
+  glm::quat dq(0.0f, dthetaWorld.x, dthetaWorld.y, dthetaWorld.z);
   q = glm::normalize(q + 0.5f * dq * q);
 }
 
-static vec3 quatToOmegaWorld(const quat& q0, const quat& q1, float dt) {
-  quat dq = q1 * glm::inverse(q0);
+static glm::vec3 quatToOmegaWorld(const glm::quat& q0, const glm::quat& q1, float dt) {
+  glm::quat dq = q1 * glm::inverse(q0);
   if (dq.w < 0.0f) dq = -dq;
 
   float w = clampf(dq.w, -1.0f, 1.0f);
   float angle = 2.0f * std::acos(w);
-  if (angle < 1e-8f) return vec3(0.0f);
+  if (angle < 1e-8f) return glm::vec3(0.0f);
 
   float s = std::sqrt(std::max(0.0f, 1.0f - w * w));
-  vec3 axis(dq.x, dq.y, dq.z);
+  glm::vec3 axis(dq.x, dq.y, dq.z);
   if (s > 1e-8f) axis /= s;
   return axis * (angle / dt);
 }
 
 struct RigidBody {
-  vec3 x;
-  quat q;
+  glm::vec3 x;
+  glm::quat q;
 
-  vec3 v;
-  vec3 w;
+  glm::vec3 v;
+  glm::vec3 w;
 
-  vec3 xPred;
-  quat qPred;
+  glm::vec3 xPred;
+  glm::quat qPred;
 
   float invMass;
-  mat3  invInertiaLocal;
+  glm::mat3 invInertiaLocal;
 
-  vec3 halfExtents;
+  glm::vec3 halfExtents;
 };
 
 static std::vector<RigidBody> g_bodies;
 
-static mat3 invInertiaWorld(const RigidBody& b) {
-  mat3 R = glm::toMat3(b.qPred);
+static glm::mat3 invInertiaWorld(const RigidBody& b) {
+  glm::mat3 R = glm::toMat3(b.qPred);
   return R * b.invInertiaLocal * glm::transpose(R);
 }
 
-static vec3 worldPoint(const RigidBody& b, const vec3& localP) {
+static glm::vec3 worldPoint(const RigidBody& b, const glm::vec3& localP) {
   return b.xPred + glm::rotate(b.qPred, localP);
 }
 
 struct JointPointConstraint {
   int a = -1;
   int b = -1;
-  vec3 la{0.0f};
-  vec3 lb{0.0f};
-  vec3 lambda{0.0f};
+  glm::vec3 la{0.0f};
+  glm::vec3 lb{0.0f};
+  glm::vec3 lambda{0.0f};
   float compliance = 0.0f;
 
   void solve(float dt) {
     if (a < 0 || b < 0) return;
 
-    const vec3 axes[3] = { vec3(1,0,0), vec3(0,1,0), vec3(0,0,1) };
+    const glm::vec3 axes[3] = {
+      glm::vec3(1, 0, 0),
+      glm::vec3(0, 1, 0),
+      glm::vec3(0, 0, 1)
+    };
 
     for (int k = 0; k < 3; ++k) {
-      const vec3 axis = axes[k];
+      const glm::vec3 axis = axes[k];
 
       RigidBody& A = g_bodies[a];
       RigidBody& B = g_bodies[b];
 
-      vec3 rA = glm::rotate(A.qPred, la);
-      vec3 rB = glm::rotate(B.qPred, lb);
+      glm::vec3 rA = glm::rotate(A.qPred, la);
+      glm::vec3 rB = glm::rotate(B.qPred, lb);
 
-      vec3 pA = A.xPred + rA;
-      vec3 pB = B.xPred + rB;
+      glm::vec3 pA = A.xPred + rA;
+      glm::vec3 pB = B.xPred + rB;
 
       float C = glm::dot(pA - pB, axis);
 
-      vec3 gradAx = axis;
-      vec3 gradBx = -axis;
+      glm::vec3 gradAx = axis;
+      glm::vec3 gradBx = -axis;
 
-      vec3 gradAq = glm::cross(rA, gradAx);
-      vec3 gradBq = glm::cross(rB, gradBx);
+      glm::vec3 gradAq = glm::cross(rA, gradAx);
+      glm::vec3 gradBq = glm::cross(rB, gradBx);
 
       float alpha = compliance / (dt * dt);
 
@@ -163,11 +159,11 @@ struct JointPointConstraint {
       denom += B.invMass * glm::dot(gradBx, gradBx);
 
       if (A.invMass > 0.0f) {
-        mat3 Iw = invInertiaWorld(A);
+        glm::mat3 Iw = invInertiaWorld(A);
         denom += glm::dot(gradAq, Iw * gradAq);
       }
       if (B.invMass > 0.0f) {
-        mat3 Iw = invInertiaWorld(B);
+        glm::mat3 Iw = invInertiaWorld(B);
         denom += glm::dot(gradBq, Iw * gradBq);
       }
 
@@ -184,13 +180,13 @@ struct JointPointConstraint {
       B.xPred += B.invMass * dlam * gradBx;
 
       if (A.invMass > 0.0f) {
-        mat3 Iw = invInertiaWorld(A);
-        vec3 dtheta = Iw * (dlam * gradAq);
+        glm::mat3 Iw = invInertiaWorld(A);
+        glm::vec3 dtheta = Iw * (dlam * gradAq);
         applySmallRotation(A.qPred, dtheta);
       }
       if (B.invMass > 0.0f) {
-        mat3 Iw = invInertiaWorld(B);
-        vec3 dtheta = Iw * (dlam * gradBq);
+        glm::mat3 Iw = invInertiaWorld(B);
+        glm::vec3 dtheta = Iw * (dlam * gradBq);
         applySmallRotation(B.qPred, dtheta);
       }
     }
@@ -200,8 +196,8 @@ struct JointPointConstraint {
 struct MaxDistanceConstraint {
   int a = -1;
   int b = -1;
-  vec3 la{0.0f};
-  vec3 lb{0.0f};
+  glm::vec3 la{0.0f};
+  glm::vec3 lb{0.0f};
   float maxDist = 0.0f;
   float lambda = 0.0f;
   float compliance = 0.0f;
@@ -212,25 +208,25 @@ struct MaxDistanceConstraint {
     RigidBody& A = g_bodies[a];
     RigidBody& B = g_bodies[b];
 
-    vec3 rA = glm::rotate(A.qPred, la);
-    vec3 rB = glm::rotate(B.qPred, lb);
+    glm::vec3 rA = glm::rotate(A.qPred, la);
+    glm::vec3 rB = glm::rotate(B.qPred, lb);
 
-    vec3 pA = A.xPred + rA;
-    vec3 pB = B.xPred + rB;
+    glm::vec3 pA = A.xPred + rA;
+    glm::vec3 pB = B.xPred + rB;
 
-    vec3 d = pB - pA;
+    glm::vec3 d = pB - pA;
     float dist = glm::length(d);
     if (dist < 1e-8f) return;
     if (dist <= maxDist) return;
 
-    vec3 n = d / dist;
+    glm::vec3 n = d / dist;
     float C = dist - maxDist;
 
-    vec3 gradAx = -n;
-    vec3 gradBx =  n;
+    glm::vec3 gradAx = -n;
+    glm::vec3 gradBx =  n;
 
-    vec3 gradAq = glm::cross(rA, gradAx);
-    vec3 gradBq = glm::cross(rB, gradBx);
+    glm::vec3 gradAq = glm::cross(rA, gradAx);
+    glm::vec3 gradBq = glm::cross(rB, gradBx);
 
     float alpha = compliance / (dt * dt);
 
@@ -239,11 +235,11 @@ struct MaxDistanceConstraint {
     denom += B.invMass * glm::dot(gradBx, gradBx);
 
     if (A.invMass > 0.0f) {
-      mat3 Iw = invInertiaWorld(A);
+      glm::mat3 Iw = invInertiaWorld(A);
       denom += glm::dot(gradAq, Iw * gradAq);
     }
     if (B.invMass > 0.0f) {
-      mat3 Iw = invInertiaWorld(B);
+      glm::mat3 Iw = invInertiaWorld(B);
       denom += glm::dot(gradBq, Iw * gradBq);
     }
 
@@ -257,13 +253,14 @@ struct MaxDistanceConstraint {
     B.xPred += B.invMass * dlam * gradBx;
 
     if (A.invMass > 0.0f) {
-      mat3 Iw = invInertiaWorld(A);
-      vec3 dtheta = Iw * (dlam * gradAq);
+      glm::mat3 Iw = invInertiaWorld(A);
+      glm::vec3 dtheta = Iw * (dlam * gradAq);
+      applySmallRotation(B.qPred, glm::vec3(0.0f)); // no-op guard (kept minimal)
       applySmallRotation(A.qPred, dtheta);
     }
     if (B.invMass > 0.0f) {
-      mat3 Iw = invInertiaWorld(B);
-      vec3 dtheta = Iw * (dlam * gradBq);
+      glm::mat3 Iw = invInertiaWorld(B);
+      glm::vec3 dtheta = Iw * (dlam * gradBq);
       applySmallRotation(B.qPred, dtheta);
     }
   }
@@ -272,8 +269,8 @@ struct MaxDistanceConstraint {
 static std::vector<JointPointConstraint> g_joints;
 static std::vector<MaxDistanceConstraint> g_lrcs;
 
-static mat3 boxInvInertiaLocal(float mass, const vec3& halfExtents) {
-  if (mass <= 0.0f) return mat3(0.0f);
+static glm::mat3 boxInvInertiaLocal(float mass, const glm::vec3& halfExtents) {
+  if (mass <= 0.0f) return glm::mat3(0.0f);
 
   float hx = halfExtents.x;
   float hy = halfExtents.y;
@@ -283,7 +280,7 @@ static mat3 boxInvInertiaLocal(float mass, const vec3& halfExtents) {
   float Iyy = (1.0f / 3.0f) * mass * (hx * hx + hz * hz);
   float Izz = (1.0f / 3.0f) * mass * (hx * hx + hy * hy);
 
-  mat3 I(0.0f);
+  glm::mat3 I(0.0f);
   I[0][0] = (Ixx > 0.0f) ? 1.0f / Ixx : 0.0f;
   I[1][1] = (Iyy > 0.0f) ? 1.0f / Iyy : 0.0f;
   I[2][2] = (Izz > 0.0f) ? 1.0f / Izz : 0.0f;
@@ -300,23 +297,23 @@ static void buildChain() {
   float mass = 1.0f;
   float segLen = 2.0f * g_boxHalf.y;
 
-  vec3 rootPos(0.0f, 1.2f, 0.0f);
+  glm::vec3 rootPos(0.0f, 1.2f, 0.0f);
 
   for (int i = 0; i < g_numBodies; ++i) {
     RigidBody b;
     b.halfExtents = g_boxHalf;
-    b.x = rootPos - vec3(0.0f, (float)i * segLen, 0.0f);
-    b.q = quat(1.0f, 0.0f, 0.0f, 0.0f);
+    b.x = rootPos - glm::vec3(0.0f, (float)i * segLen, 0.0f);
+    b.q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 
-    b.v = vec3(0.0f);
-    b.w = vec3(0.0f);
+    b.v = glm::vec3(0.0f);
+    b.w = glm::vec3(0.0f);
 
     b.xPred = b.x;
     b.qPred = b.q;
 
     if (i == 0) {
       b.invMass = 0.0f;
-      b.invInertiaLocal = mat3(0.0f);
+      b.invInertiaLocal = glm::mat3(0.0f);
     } else {
       b.invMass = 1.0f / mass;
       b.invInertiaLocal = boxInvInertiaLocal(mass, b.halfExtents);
@@ -330,14 +327,14 @@ static void buildChain() {
     JointPointConstraint jc;
     jc.a = i;
     jc.b = i + 1;
-    jc.la = vec3(0.0f, -g_boxHalf.y, 0.0f);
-    jc.lb = vec3(0.0f,  g_boxHalf.y, 0.0f);
-    jc.lambda = vec3(0.0f);
+    jc.la = glm::vec3(0.0f, -g_boxHalf.y, 0.0f);
+    jc.lb = glm::vec3(0.0f,  g_boxHalf.y, 0.0f);
+    jc.lambda = glm::vec3(0.0f);
     jc.compliance = g_jointCompliance;
     g_joints.push_back(jc);
   }
 
-  vec3 rootAnchorLocalA = vec3(0.0f, -g_boxHalf.y, 0.0f);
+  glm::vec3 rootAnchorLocalA = glm::vec3(0.0f, -g_boxHalf.y, 0.0f);
 
   std::vector<float> dMax;
   dMax.resize(g_numBodies - 1);
@@ -354,7 +351,7 @@ static void buildChain() {
     lc.a = 0;
     lc.b = bodyB;
     lc.la = rootAnchorLocalA;
-    lc.lb = vec3(0.0f, g_boxHalf.y, 0.0f);
+    lc.lb = glm::vec3(0.0f, g_boxHalf.y, 0.0f);
     lc.maxDist = dMax[jointIdx];
     lc.lambda = 0.0f;
     lc.compliance = g_lrcCompliance;
@@ -409,16 +406,16 @@ static void drawGround(float y) {
   glEnd();
 }
 
-static void drawBoxWire(const vec3& half) {
-  vec3 v[8] = {
-    vec3(-half.x, -half.y, -half.z),
-    vec3( half.x, -half.y, -half.z),
-    vec3( half.x,  half.y, -half.z),
-    vec3(-half.x,  half.y, -half.z),
-    vec3(-half.x, -half.y,  half.z),
-    vec3( half.x, -half.y,  half.z),
-    vec3( half.x,  half.y,  half.z),
-    vec3(-half.x,  half.y,  half.z)
+static void drawBoxWire(const glm::vec3& half) {
+  glm::vec3 v[8] = {
+    glm::vec3(-half.x, -half.y, -half.z),
+    glm::vec3( half.x, -half.y, -half.z),
+    glm::vec3( half.x,  half.y, -half.z),
+    glm::vec3(-half.x,  half.y, -half.z),
+    glm::vec3(-half.x, -half.y,  half.z),
+    glm::vec3( half.x, -half.y,  half.z),
+    glm::vec3( half.x,  half.y,  half.z),
+    glm::vec3(-half.x,  half.y,  half.z)
   };
 
   int e[12][2] = {
@@ -435,15 +432,15 @@ static void drawBoxWire(const vec3& half) {
   glEnd();
 }
 
-static vec3 jointWorldPos(int jointIdx) {
-  if (jointIdx < 0 || jointIdx >= (int)g_joints.size()) return vec3(0.0f);
+static glm::vec3 jointWorldPos(int jointIdx) {
+  if (jointIdx < 0 || jointIdx >= (int)g_joints.size()) return glm::vec3(0.0f);
   const JointPointConstraint& jc = g_joints[jointIdx];
 
   const RigidBody& A = g_bodies[jc.a];
   const RigidBody& B = g_bodies[jc.b];
 
-  vec3 pA = worldPoint(A, jc.la);
-  vec3 pB = worldPoint(B, jc.lb);
+  glm::vec3 pA = worldPoint(A, jc.la);
+  glm::vec3 pB = worldPoint(B, jc.lb);
   return 0.5f * (pA + pB);
 }
 
@@ -511,19 +508,19 @@ void display() {
   glBegin(GL_POINTS);
   glColor3f(1.0f, 0.2f, 0.2f);
   for (int j = 0; j < (int)g_joints.size(); ++j) {
-    vec3 p = jointWorldPos(j);
+    glm::vec3 p = jointWorldPos(j);
     glVertex3fv(glm::value_ptr(p));
   }
   glEnd();
 
   if (g_useLRC) {
-    vec3 p0 = jointWorldPos(0);
+    glm::vec3 p0 = jointWorldPos(0);
     glLineWidth(2.0f);
     glBegin(GL_LINES);
     glColor3f(0.2f, 0.9f, 0.2f);
     for (int j = 1; j < (int)g_joints.size(); ++j) {
-      vec3 pj = jointWorldPos(j);
-      vec3 d = pj - p0;
+      glm::vec3 pj = jointWorldPos(j);
+      glm::vec3 d = pj - p0;
       float dist = glm::length(d);
       float maxDist = (float)j * (2.0f * g_boxHalf.y);
       if (dist > maxDist + 1e-4f) {
@@ -549,10 +546,12 @@ void reshape(int w, int h) {
 void mouseButton(int button, int state, int x, int y) {
   if (button == GLUT_LEFT_BUTTON)  lbtn = (state == GLUT_DOWN);
   if (button == GLUT_RIGHT_BUTTON) rbtn = (state == GLUT_DOWN);
+
 #if defined(FREEGLUT)
   if (button == 3 && state == GLUT_DOWN) camDist *= 0.9f;
   if (button == 4 && state == GLUT_DOWN) camDist *= 1.1f;
 #endif
+
   lastMouseX = x;
   lastMouseY = y;
 }
@@ -564,10 +563,10 @@ void mouseMotion(int x, int y) {
   lastMouseY = y;
 
   if (lbtn) {
-    camYaw   += dx * 0.005f;
+    camYaw += dx * 0.005f;
     camPitch += dy * 0.005f;
     const float lim = 1.5f;
-    if (camPitch >  lim) camPitch =  lim;
+    if (camPitch > lim) camPitch = lim;
     if (camPitch < -lim) camPitch = -lim;
   }
   if (rbtn) {
@@ -595,9 +594,13 @@ void keyboard(unsigned char key, int /*x*/, int /*y*/) {
       resetSim();
       break;
     case '+':
-      camDist *= 0.9f; if (camDist < 0.5f) camDist = 0.5f; break;
+      camDist *= 0.9f;
+      if (camDist < 0.5f) camDist = 0.5f;
+      break;
     case '-':
-      camDist *= 1.1f; if (camDist > 20.0f) camDist = 20.0f; break;
+      camDist *= 1.1f;
+      if (camDist > 20.0f) camDist = 20.0f;
+      break;
     case 27:
 #if defined(FREEGLUT)
       glutLeaveMainLoop();
@@ -638,7 +641,8 @@ void idle() {
 int main(int argc, char** argv) {
   glutInit(&argc, argv);
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
-  glutInitWindowSize(1100, 800);
+
+  glutInitWindowSize(1280, 720);
   glutCreateWindow("LRC demo");
 
   glEnable(GL_DEPTH_TEST);
