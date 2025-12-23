@@ -47,6 +47,12 @@ static float g_lrcCompliance = 0.0f;
 
 static glm::vec3 g_boxHalf(0.05f, 0.12f, 0.05f);
 
+// Kinematic root drive (for a visible rigid-body-like swing)
+static float g_rootDriveAmp = 0.25f;  // meters
+static float g_rootDriveHz  = 0.50f;  // cycles per second
+static float g_rootDriveT   = 0.0f;   // seconds (simulation time)
+static glm::vec3 g_rootBasePos(0.0f);
+
 static float camDist = 2.5f;
 static float camYaw = 0.0f;
 static float camPitch = 0.3f;
@@ -357,6 +363,12 @@ static void buildChain() {
     lc.compliance = g_lrcCompliance;
     g_lrcs.push_back(lc);
   }
+  // Cache the kinematic root base pose for the periodic drive.
+  if (!g_bodies.empty()) {
+    g_rootBasePos = g_bodies[0].x;
+  }
+  g_rootDriveT = 0.0f;
+
 }
 
 static void resetSim() {
@@ -364,6 +376,23 @@ static void resetSim() {
 }
 
 static void simulateStep(float dt) {
+  // Drive the root body kinematically in X to create a clear swing motion.
+  // This is evaluated in simulation time (dt steps), so it stays deterministic.
+  g_rootDriveT += dt;
+  if (!g_bodies.empty()) {
+    const float omega = 2.0f * kPi * g_rootDriveHz;
+    const float offX  = g_rootDriveAmp * std::sin(omega * g_rootDriveT);
+    const float velX  = g_rootDriveAmp * omega * std::cos(omega * g_rootDriveT);
+
+    RigidBody& root = g_bodies[0];
+    root.x = g_rootBasePos + glm::vec3(offX, 0.0f, 0.0f);
+    root.v = glm::vec3(velX, 0.0f, 0.0f);
+    root.w = glm::vec3(0.0f);
+    root.q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    root.xPred = root.x;
+    root.qPred = root.q;
+  }
+
   for (RigidBody& b : g_bodies) {
     if (b.invMass == 0.0f) {
       b.xPred = b.x;
@@ -612,28 +641,31 @@ void keyboard(unsigned char key, int /*x*/, int /*y*/) {
 }
 
 void idle() {
-  // Fixed-step pacing:
-  // - Always advance exactly one simulation step with g_dt.
-  // - Then wait until g_dt seconds have elapsed since this idle call started.
-  // - If the machine is too slow, the wait is skipped and animation slows down.
-  const int frameStartMs = glutGet(GLUT_ELAPSED_TIME);
+  static int lastTms = 0;
+  static float acc = 0.0f;
 
-  const float simStart = (float)glutGet(GLUT_ELAPSED_TIME);
-  simulateStep(g_dt);
-  const float simEnd = (float)glutGet(GLUT_ELAPSED_TIME);
+  int now = glutGet(GLUT_ELAPSED_TIME);
+  if (lastTms == 0) lastTms = now;
+  int dtms = now - lastTms;
+  lastTms = now;
+
+  acc += (float)dtms / 1000.0f;
+
+  float simStart = (float)glutGet(GLUT_ELAPSED_TIME);
+
+  int steps = 0;
+  while (acc >= g_dt && steps < 4) {
+    simulateStep(g_dt);
+    acc -= g_dt;
+    ++steps;
+  }
+
+  float simEnd = (float)glutGet(GLUT_ELAPSED_TIME);
   g_lastSimMs = (simEnd - simStart);
 
   updateWindowTitle();
   glutPostRedisplay();
-
-  const int dtMs = std::max(1, (int)std::floor(g_dt * 1000.0f + 0.5f));
-  const int targetEndMs = frameStartMs + dtMs;
-
-  while (glutGet(GLUT_ELAPSED_TIME) < targetEndMs) {
-    // spin
-  }
 }
-
 
 int main(int argc, char** argv) {
   glutInit(&argc, argv);
