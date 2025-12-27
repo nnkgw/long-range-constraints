@@ -439,7 +439,7 @@ static glm::vec3 jointWorldPos(const std::vector<ChainLRCScene::RigidBody>& bodi
   return 0.5f * (pA + pB);
 }
 
-void ChainLRCScene::render() {
+void ChainLRCScene::display() {
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   glMatrixMode(GL_MODELVIEW);
@@ -535,7 +535,7 @@ void ChainLRCScene::reshape(int w, int h) {
   gluPerspective(45.0, (double)w / (double)h, 0.01, 50.0);
 }
 
-void ChainLRCScene::onMouseButton(int button, int state, int x, int y) {
+void ChainLRCScene::mouse(int button, int state, int x, int y) {
   if (button == GLUT_LEFT_BUTTON)  lbtn_ = (state == GLUT_DOWN);
   if (button == GLUT_RIGHT_BUTTON) rbtn_ = (state == GLUT_DOWN);
 
@@ -548,7 +548,7 @@ void ChainLRCScene::onMouseButton(int button, int state, int x, int y) {
   lastMouseY_ = y;
 }
 
-void ChainLRCScene::onMouseMotion(int x, int y) {
+void ChainLRCScene::motion(int x, int y) {
   int dx = x - lastMouseX_;
   int dy = y - lastMouseY_;
   lastMouseX_ = x;
@@ -568,7 +568,7 @@ void ChainLRCScene::onMouseMotion(int x, int y) {
   }
 }
 
-void ChainLRCScene::onKeyboard(unsigned char key, int /*x*/, int /*y*/) {
+void ChainLRCScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
   switch (key) {
     case 'l': case 'L':
       useLRC_ = !useLRC_;

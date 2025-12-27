@@ -33,22 +33,22 @@ static IScene* activeScene() {
   return g_sceneManager.active();
 }
 
-static void displayCb() {
+static void display() {
   IScene* s = activeScene();
-  if (s) s->render();
+  if (s) s->display();
 }
 
-static void reshapeCb(int w, int h) {
+static void reshape(int w, int h) {
   IScene* s = activeScene();
   if (s) s->reshape(w, h);
 }
 
-static void idleCb() {
+static void idle() {
   IScene* s = activeScene();
   if (s) s->idle();
 }
 
-static void keyboardCb(unsigned char key, int x, int y) {
+static void keyboard(unsigned char key, int x, int y) {
   // Optional: scene switching keys (does not affect existing controls).
   if (key >= '1' && key <= '9') {
     std::size_t idx = (std::size_t)(key - '1');
@@ -64,17 +64,17 @@ static void keyboardCb(unsigned char key, int x, int y) {
   }
 
   IScene* s = activeScene();
-  if (s) s->onKeyboard(key, x, y);
+  if (s) s->keyboard(key, x, y);
 }
 
-static void mouseButtonCb(int button, int state, int x, int y) {
+static void mouse(int button, int state, int x, int y) {
   IScene* s = activeScene();
-  if (s) s->onMouseButton(button, state, x, y);
+  if (s) s->mouse(button, state, x, y);
 }
 
-static void mouseMotionCb(int x, int y) {
+static void motion(int x, int y) {
   IScene* s = activeScene();
-  if (s) s->onMouseMotion(x, y);
+  if (s) s->motion(x, y);
 }
 
 int main(int argc, char** argv) {
@@ -96,12 +96,12 @@ int main(int argc, char** argv) {
     s->usage();
   }
 
-  glutDisplayFunc(displayCb);
-  glutReshapeFunc(reshapeCb);
-  glutIdleFunc(idleCb);
-  glutKeyboardFunc(keyboardCb);
-  glutMouseFunc(mouseButtonCb);
-  glutMotionFunc(mouseMotionCb);
+  glutDisplayFunc(display);
+  glutReshapeFunc(reshape);
+  glutIdleFunc(idle);
+  glutKeyboardFunc(keyboard);
+  glutMouseFunc(mouse);
+  glutMotionFunc(motion);
 
   glutMainLoop();
   return 0;

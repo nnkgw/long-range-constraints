@@ -16,13 +16,13 @@ public:
   ~ChainLRCScene() override;
 
   void reset() override;
-  void render() override;
+  void display() override;
   void idle() override;
 
   void reshape(int w, int h) override;
-  void onMouseButton(int button, int state, int x, int y) override;
-  void onMouseMotion(int x, int y) override;
-  void onKeyboard(unsigned char key, int x, int y) override;
+  void mouse(int button, int state, int x, int y) override;
+  void motion(int x, int y) override;
+  void keyboard(unsigned char key, int x, int y) override;
 
   void usage() override;
 
