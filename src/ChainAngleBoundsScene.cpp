@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -21,6 +22,20 @@ static glm::mat4 bodyTransform(const lrc::RigidBody& b) {
 
 static glm::vec3 worldPoint(const lrc::RigidBody& b, const glm::vec3& localP) {
   return b.x + glm::rotate(b.q, localP);
+}
+
+static glm::vec3 jointWorldPos(const std::vector<lrc::RigidBody>& bodies,
+                               const std::vector<lrc::JointPointConstraint>& joints,
+                               int jointIdx) {
+  if (jointIdx < 0 || jointIdx >= (int)joints.size()) return glm::vec3(0.0f);
+  const lrc::JointPointConstraint& jc = joints[jointIdx];
+
+  const lrc::RigidBody& A = bodies[jc.a];
+  const lrc::RigidBody& B = bodies[jc.b];
+
+  glm::vec3 pA = worldPoint(A, jc.la);
+  glm::vec3 pB = worldPoint(B, jc.lb);
+  return 0.5f * (pA + pB);
 }
 
 ChainAngleBoundsScene::ChainAngleBoundsScene() {
@@ -109,6 +124,104 @@ void ChainAngleBoundsScene::drawSceneContents() {
     glPopMatrix();
   }
 
+  // Match Phase A visuals: joint points in red.
+  glPointSize(6.0f);
+  glBegin(GL_POINTS);
+  glColor3f(1.0f, 0.2f, 0.2f);
+  for (int j = 0; j < (int)chain_.joints().size(); ++j) {
+    glm::vec3 p = jointWorldPos(chain_.bodies(), chain_.joints(), j);
+    glVertex3fv(glm::value_ptr(p));
+  }
+  glEnd();
+
+  // Visualize the angle limit at each internal joint.
+  // Red wedge: +/- jointLimitDeg_ around the parent segment direction.
+  // Thin arc: current bend angle (white if within limit, red if violated).
+  {
+    float limitRad = jointLimitDeg_ * (lrc::kPi / 180.0f);
+    float r = chain_.segmentLen() * 0.35f;
+
+    std::vector<glm::vec3> jp;
+    jp.reserve(chain_.joints().size());
+    for (int j = 0; j < (int)chain_.joints().size(); ++j) {
+      jp.push_back(jointWorldPos(chain_.bodies(), chain_.joints(), j));
+    }
+
+    glLineWidth(2.0f);
+    glColor3f(1.0f, 0.2f, 0.2f);
+
+    for (int j = 1; j + 1 < (int)jp.size(); ++j) {
+      glm::vec3 d0 = jp[j] - jp[j - 1];
+      glm::vec3 d1 = jp[j + 1] - jp[j];
+      float l0 = glm::length(d0);
+      float l1 = glm::length(d1);
+      if (l0 < 1e-6f || l1 < 1e-6f) continue;
+      d0 /= l0;
+      d1 /= l1;
+
+      glm::vec3 n = glm::cross(d0, d1);
+      float nl = glm::length(n);
+      if (nl < 1e-6f) {
+        n = glm::cross(d0, glm::vec3(0.0f, 1.0f, 0.0f));
+        nl = glm::length(n);
+        if (nl < 1e-6f) {
+          n = glm::cross(d0, glm::vec3(1.0f, 0.0f, 0.0f));
+          nl = glm::length(n);
+        }
+      }
+      if (nl < 1e-6f) continue;
+      n /= nl;
+
+      glm::vec3 v = glm::cross(n, d0);
+      float vl = glm::length(v);
+      if (vl < 1e-6f) continue;
+      v /= vl;
+
+      glm::vec3 dirP = d0 * std::cos(limitRad) + v * std::sin(limitRad);
+      glm::vec3 dirM = d0 * std::cos(limitRad) - v * std::sin(limitRad);
+
+      glBegin(GL_LINES);
+      glVertex3fv(glm::value_ptr(jp[j]));
+      glVertex3fv(glm::value_ptr(jp[j] + r * dirP));
+      glVertex3fv(glm::value_ptr(jp[j]));
+      glVertex3fv(glm::value_ptr(jp[j] + r * dirM));
+      glEnd();
+
+      glBegin(GL_LINE_STRIP);
+      const int kSeg = 20;
+      for (int k = 0; k <= kSeg; ++k) {
+        float t = -limitRad + (2.0f * limitRad) * (float)k / (float)kSeg;
+        glm::vec3 dir = d0 * std::cos(t) + v * std::sin(t);
+        glm::vec3 q = jp[j] + r * dir;
+        glVertex3fv(glm::value_ptr(q));
+      }
+      glEnd();
+
+      float ang = std::atan2(glm::dot(d1, v), glm::dot(d1, d0));
+      float absAng = std::fabs(ang);
+
+      float rr = r * 0.82f;
+      glLineWidth(1.0f);
+      if (absAng > limitRad + 1e-4f) glColor3f(1.0f, 0.2f, 0.2f);
+      else                           glColor3f(0.95f, 0.95f, 0.95f);
+
+      glBegin(GL_LINE_STRIP);
+      const int kSeg2 = 16;
+      for (int k = 0; k <= kSeg2; ++k) {
+        float t = ang * (float)k / (float)kSeg2;
+        glm::vec3 dir = d0 * std::cos(t) + v * std::sin(t);
+        glm::vec3 q = jp[j] + rr * dir;
+        glVertex3fv(glm::value_ptr(q));
+      }
+      glEnd();
+
+      glLineWidth(2.0f);
+      glColor3f(1.0f, 0.2f, 0.2f);
+    }
+
+    glLineWidth(1.0f);
+  }
+
   if (useLrc_) {
     glLineWidth(2.0f);
     glBegin(GL_LINES);
@@ -141,6 +254,11 @@ void ChainAngleBoundsScene::display() {
   applyCameraTransform();
 
   drawSceneContents();
+
+  // Keep the joint limit visible even if ChainSceneBase::idle() overwrites the title.
+  char extra[128];
+  std::snprintf(extra, sizeof(extra), "limit=%.1f deg", jointLimitDeg_);
+  updateWindowTitle(extra);
 
   glutSwapBuffers();
 }
