@@ -103,7 +103,8 @@ void ChainAngleBoundsScene::drawSceneContents() {
     glPushMatrix();
     glm::mat4 T = bodyTransform(b);
     glMultMatrixf(glm::value_ptr(T));
-    glColor3f(0.85f, 0.85f, 0.85f);
+    if (i == 0) glColor3f(0.9f, 0.6f, 0.2f); // highlight the kinematic root in orange.
+    else        glColor3f(0.8f, 0.8f, 0.9f);
     drawBoxWire(b.halfExtents);
     glPopMatrix();
   }
