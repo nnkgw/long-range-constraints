@@ -1,107 +1,81 @@
-﻿// Long Range Constraints demo (rigid body chain)
-// Step 0 refactor: introduce Scene abstraction without changing behavior.
+#include <cstdio>
+#include <memory>
 
-#if defined(WIN32)
-#pragma warning(disable:4996)
-#include <GL/freeglut.h>
-#elif defined(__APPLE__) || defined(MACOSX)
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#define GL_SILENCE_DEPRECATION
-#include <GLUT/glut.h>
-#else
-#if defined(__has_include)
-#if __has_include(<GL/freeglut.h>)
-#include <GL/freeglut.h>
-#elif __has_include(<GL/glut.h>)
-#include <GL/glut.h>
-#else
-#include <GLUT/glut.h>
-#endif
-#else
-#include <GL/freeglut.h>
-#endif
-#endif
-
-#include <cstdlib>
-
+#include "GlutCompat.h"
 #include "SceneManager.h"
 #include "ChainLRCScene.h"
+#include "ChainAngleBoundsScene.h"
 
 static SceneManager g_sceneManager;
 
-static IScene* activeScene() {
-  return g_sceneManager.active();
-}
-
 static void display() {
-  IScene* s = activeScene();
+  IScene* s = g_sceneManager.active();
   if (s) s->display();
 }
 
 static void reshape(int w, int h) {
-  IScene* s = activeScene();
+  IScene* s = g_sceneManager.active();
   if (s) s->reshape(w, h);
 }
 
 static void idle() {
-  IScene* s = activeScene();
+  IScene* s = g_sceneManager.active();
   if (s) s->idle();
 }
 
 static void keyboard(unsigned char key, int x, int y) {
-  // Optional: scene switching keys (does not affect existing controls).
-  if (key >= '1' && key <= '9') {
-    std::size_t idx = (std::size_t)(key - '1');
-    if (idx < g_sceneManager.count()) {
-      g_sceneManager.setActiveIndex(idx);
-      IScene* s = activeScene();
-      if (s) {
-        s->reset();
-        s->usage();
-      }
-      return;
-    }
+  // Scene switching is handled here so individual scenes can keep their original key maps.
+  if (key == '1') {
+    g_sceneManager.setActive(0);
+    return;
+  }
+  if (key == '2') {
+    g_sceneManager.setActive(1);
+    return;
   }
 
-  IScene* s = activeScene();
+  IScene* s = g_sceneManager.active();
   if (s) s->keyboard(key, x, y);
 }
 
 static void mouse(int button, int state, int x, int y) {
-  IScene* s = activeScene();
+  IScene* s = g_sceneManager.active();
   if (s) s->mouse(button, state, x, y);
 }
 
 static void motion(int x, int y) {
-  IScene* s = activeScene();
+  IScene* s = g_sceneManager.active();
   if (s) s->motion(x, y);
 }
 
+static void initGL() {
+  glEnable(GL_DEPTH_TEST);
+  glClearColor(0.08f, 0.09f, 0.10f, 1.0f);
+}
+
 int main(int argc, char** argv) {
+  std::printf("Long Range Constraints for Rigid Body Simulations\n");
+  std::printf("  1: Phase A (MaxDistance LRC)\n");
+  std::printf("  2: Phase B (Angle->Distance Bounds)\n");
+
   glutInit(&argc, argv);
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
 
   glutInitWindowSize(1280, 720);
-  glutCreateWindow("LRC demo");
+  glutCreateWindow("Long Range Constraints");
 
-  glEnable(GL_DEPTH_TEST);
-  glClearColor(0.05f, 0.06f, 0.07f, 1.0f);
+  initGL();
 
-  // Step 0: register a single scene (original behavior).
-  g_sceneManager.addScene<ChainLRCScene>();
-
-  IScene* s = activeScene();
-  if (s) {
-    s->reset();
-    s->usage();
-  }
+  g_sceneManager.add(std::make_unique<ChainLRCScene>());
+  g_sceneManager.add(std::make_unique<ChainAngleBoundsScene>());
+  g_sceneManager.setActive(0);
 
   glutDisplayFunc(display);
   glutReshapeFunc(reshape);
-  glutIdleFunc(idle);
   glutKeyboardFunc(keyboard);
   glutMouseFunc(mouse);
   glutMotionFunc(motion);
+  glutIdleFunc(idle);
 
   glutMainLoop();
   return 0;

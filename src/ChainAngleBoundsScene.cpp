@@ -1,4 +1,4 @@
-#include "ChainLRCScene.h"
+#include "ChainAngleBoundsScene.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,43 +23,30 @@ static glm::vec3 worldPoint(const lrc::RigidBody& b, const glm::vec3& localP) {
   return b.x + glm::rotate(b.q, localP);
 }
 
-static glm::vec3 jointWorldPos(const std::vector<lrc::RigidBody>& bodies,
-                               const std::vector<lrc::JointPointConstraint>& joints,
-                               int jointIdx) {
-  if (jointIdx < 0 || jointIdx >= (int)joints.size()) return glm::vec3(0.0f);
-  const lrc::JointPointConstraint& jc = joints[jointIdx];
-
-  const lrc::RigidBody& A = bodies[jc.a];
-  const lrc::RigidBody& B = bodies[jc.b];
-
-  glm::vec3 pA = worldPoint(A, jc.la);
-  glm::vec3 pB = worldPoint(B, jc.lb);
-  return 0.5f * (pA + pB);
-}
-
-ChainLRCScene::ChainLRCScene() {
-  titleName_ = "Long Range Constraints - Phase A";
+ChainAngleBoundsScene::ChainAngleBoundsScene() {
+  titleName_ = "Long Range Constraints - Phase B";
   camPitch_ = 0.6f;
   camDist_ = 4.0f;
 }
 
-void ChainLRCScene::usage() const {
+void ChainAngleBoundsScene::usage() const {
   std::printf("\n");
-  std::printf("Phase A (MaxDistance LRC)\n");
+  std::printf("Phase B (Angle limits -> Distance bounds)\n");
   std::printf("  Mouse LMB: orbit, RMB: pan, wheel: zoom\n");
   std::printf("  [ / ] : iterations\n");
   std::printf("  L     : toggle LRC\n");
+  std::printf("  , / . : joint limit (deg)\n");
   std::printf("  R     : reset\n");
   std::printf("  ESC   : quit\n");
   std::printf("\n");
 }
 
-void ChainLRCScene::reset() {
+void ChainAngleBoundsScene::reset() {
   buildScene();
   updateWindowTitle();
 }
 
-void ChainLRCScene::buildScene() {
+void ChainAngleBoundsScene::buildScene() {
   glm::vec3 rootPos(0.0f, 1.2f, 0.0f);
   chain_.buildVerticalChain(numBodies_, boxHalf_, mass_, rootPos);
 
@@ -68,7 +55,8 @@ void ChainLRCScene::buildScene() {
     jc.lambda = glm::vec3(0.0f);
   }
 
-  chain_.buildLrcMax(lrcCompliance_);
+  float jointLimitRad = jointLimitDeg_ * (lrc::kPi / 180.0f);
+  chain_.buildLrcBounds(jointLimitRad, lrcCompliance_);
 
   if (!chain_.bodies().empty()) {
     rootBasePos_ = chain_.bodies()[0].x;
@@ -77,11 +65,14 @@ void ChainLRCScene::buildScene() {
 
   lastTms_ = 0;
   acc_ = 0.0f;
+
+  char extra[128];
+  std::snprintf(extra, sizeof(extra), "limit=%.1f deg", jointLimitDeg_);
+  updateWindowTitle(extra);
 }
 
-void ChainLRCScene::simulateStep(float dt) {
-  // Drive the root body kinematically in X to create a clear swing motion.
-  // This is evaluated in simulation time (dt steps), so it stays deterministic.
+void ChainAngleBoundsScene::simulateStep(float dt) {
+  // Same root drive as Phase A to keep the comparison clear.
   rootDriveT_ += dt;
   if (!chain_.bodies().empty()) {
     const float omega = 2.0f * lrc::kPi * rootDriveHz_;
@@ -97,10 +88,10 @@ void ChainLRCScene::simulateStep(float dt) {
     root.qPred = root.q;
   }
 
-  chain_.step(dt, iters_, useLrc_, false, gravity_);
+  chain_.step(dt, iters_, useLrc_, true, gravity_);
 }
 
-void ChainLRCScene::drawSceneContents() {
+void ChainAngleBoundsScene::drawSceneContents() {
   glDisable(GL_LIGHTING);
   glLineWidth(1.0f);
 
@@ -112,45 +103,36 @@ void ChainLRCScene::drawSceneContents() {
     glPushMatrix();
     glm::mat4 T = bodyTransform(b);
     glMultMatrixf(glm::value_ptr(T));
-    if (i == 0) glColor3f(0.9f, 0.6f, 0.2f); // root body highlighted in orange.
-    else        glColor3f(0.8f, 0.8f, 0.9f);
+    glColor3f(0.85f, 0.85f, 0.85f);
     drawBoxWire(b.halfExtents);
     glPopMatrix();
   }
 
-  glPointSize(6.0f); // joint points in red.
-  glBegin(GL_POINTS);
-  glColor3f(1.0f, 0.2f, 0.2f);
-  for (int j = 0; j < (int)chain_.joints().size(); ++j) {
-    glm::vec3 p = jointWorldPos(chain_.bodies(), chain_.joints(), j);
-    glVertex3fv(glm::value_ptr(p));
-  }
-  glEnd();
-
-  if (useLrc_) { // Draw violated LRC links
+  if (useLrc_) {
     glLineWidth(2.0f);
-    glColor3f(0.2f, 0.9f, 0.2f);
     glBegin(GL_LINES);
 
     glm::vec3 p0 = worldPoint(chain_.bodies()[0], chain_.rootAnchorLocal());
-    for (int jointIdx = 1; jointIdx < chain_.numBodies() - 1; ++jointIdx) {
-      int bodyB = jointIdx + 1;
-      glm::vec3 pj = worldPoint(chain_.bodies()[bodyB], chain_.childAnchorLocal());
+    for (const lrc::DistanceBoundsConstraint& c : chain_.lrcBounds()) {
+      const lrc::RigidBody& B = chain_.bodies()[c.b];
+      glm::vec3 pj = worldPoint(B, c.lb);
 
-      glm::vec3 d = pj - p0;
-      float dist = glm::length(d);
-      float maxDist = (float)jointIdx * chain_.segmentLen();
-      if (dist > maxDist + 1e-4f) {
+      float dist = glm::length(pj - p0);
+      bool violated = (dist < c.minDist - 1e-4f) || (dist > c.maxDist + 1e-4f);
+
+      if (violated) {
+        glColor3f(1.0f, 0.3f, 0.2f);
         glVertex3fv(glm::value_ptr(p0));
         glVertex3fv(glm::value_ptr(pj));
       }
     }
+
     glEnd();
     glLineWidth(1.0f);
   }
 }
 
-void ChainLRCScene::display() {
+void ChainAngleBoundsScene::display() {
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   glMatrixMode(GL_MODELVIEW);
@@ -162,22 +144,29 @@ void ChainLRCScene::display() {
   glutSwapBuffers();
 }
 
-void ChainLRCScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
+void ChainAngleBoundsScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
+  bool needRebuild = false;
+
   switch (key) {
     case 'l': case 'L':
       useLrc_ = !useLrc_;
-      updateWindowTitle();
       break;
     case '[':
       iters_ = std::max(1, iters_ - 1);
-      updateWindowTitle();
       break;
     case ']':
       iters_ = std::min(80, iters_ + 1);
-      updateWindowTitle();
+      break;
+    case ',':
+      jointLimitDeg_ = std::max(0.0f, jointLimitDeg_ - 2.5f);
+      needRebuild = true;
+      break;
+    case '.':
+      jointLimitDeg_ = std::min(90.0f, jointLimitDeg_ + 2.5f);
+      needRebuild = true;
       break;
     case 'r': case 'R':
-      reset();
+      needRebuild = true;
       break;
     case '=':
       camDist_ *= 0.9f;
@@ -194,5 +183,13 @@ void ChainLRCScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
       std::exit(0);
 #endif
       break;
+  }
+
+  if (needRebuild) {
+    reset();
+  } else {
+    char extra[128];
+    std::snprintf(extra, sizeof(extra), "limit=%.1f deg", jointLimitDeg_);
+    updateWindowTitle(extra);
   }
 }
