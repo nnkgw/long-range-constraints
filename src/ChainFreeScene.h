@@ -1,0 +1,29 @@
+#pragma once
+#include "ChainSceneBase.h"
+
+class ChainFreeScene final : public ChainSceneBase {
+public:
+  ChainFreeScene();
+  ~ChainFreeScene() override = default;
+
+  void reset() override;
+  void display() override;
+  void keyboard(unsigned char key, int x, int y) override;
+  const char* name() const override { return "Phase C (Free Chains)"; }
+  void usage() const override;
+
+private:
+  void simulateStep(float dt) override;
+  void drawSceneContents() override;
+
+  void buildScene();
+
+  int numBodies_ = 14;
+  glm::vec3 boxHalf_{0.05f, 0.10f, 0.05f};
+  float mass_ = 1.0f;
+
+  float jointCompliance_ = 0.0f;
+  float lrcCompliance_ = 0.0f;
+
+  bool drawAllLrc_ = false;
+};

@@ -276,7 +276,8 @@ void ChainSystem::clear() {
 void ChainSystem::buildVerticalChain(int numBodies,
                                      const glm::vec3& boxHalf,
                                      float mass,
-                                     const glm::vec3& rootPos) {
+                                     const glm::vec3& rootPos,
+                                     bool kinematicRoot) {
   clear();
   if (numBodies < 2) return;
 
@@ -296,7 +297,7 @@ void ChainSystem::buildVerticalChain(int numBodies,
     b.xPred = b.x;
     b.qPred = b.q;
 
-    if (i == 0) {
+    if (i == 0 && kinematicRoot) {
       b.invMass = 0.0f;
       b.invInertiaLocal = glm::mat3(0.0f);
     } else {
@@ -348,6 +349,48 @@ void ChainSystem::buildLrcMax(float lrcCompliance) {
     lrcMax_.push_back(lc);
   }
 }
+
+void ChainSystem::buildLrcFreeMaxHierarchy(float lrcCompliance, int minSpan) {
+  lrcMax_.clear();
+  lrcBounds_.clear();
+
+  int nb = (int)bodies_.size();
+  if (nb < 2) return;
+
+  // Nodes along the chain: we use the top point of each body, plus the bottom point of the last body.
+  const int nodeCount = nb + 1;
+  std::vector<int> nodeBody(nodeCount, -1);
+  std::vector<glm::vec3> nodeLocal(nodeCount, glm::vec3(0.0f));
+  for (int i = 0; i < nb; ++i) {
+    nodeBody[i] = i;
+    nodeLocal[i] = childAnchorLocal_;
+  }
+  nodeBody[nb] = nb - 1;
+  nodeLocal[nb] = rootAnchorLocal_;
+
+  // Hierarchical links with power-of-two spans (O(n log n)).
+  int span = std::max(2, minSpan);
+  while (span < nodeCount) {
+    for (int i = 0; i + span < nodeCount; ++i) {
+      int a = nodeBody[i];
+      int b = nodeBody[i + span];
+      if (a < 0 || b < 0) continue;
+      if (a == b) continue;
+
+      MaxDistanceConstraint lc;
+      lc.a = a;
+      lc.b = b;
+      lc.la = nodeLocal[i];
+      lc.lb = nodeLocal[i + span];
+      lc.maxDist = (float)span * segLen_;
+      lc.lambda = 0.0f;
+      lc.compliance = lrcCompliance;
+      lrcMax_.push_back(lc);
+    }
+    span *= 2;
+  }
+}
+
 
 DistanceBoundSequence computeDistanceBoundsFromAngleLimits(int numSegments,
                                                           float segLen,

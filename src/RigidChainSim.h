@@ -75,9 +75,12 @@ public:
   void buildVerticalChain(int numBodies,
                           const glm::vec3& boxHalf,
                           float mass,
-                          const glm::vec3& rootPos);
+                          const glm::vec3& rootPos,
+                          bool kinematicRoot = true);
 
   void buildLrcMax(float lrcCompliance);
+  void buildLrcFreeMaxHierarchy(float lrcCompliance, int minSpan = 2);
+
   void buildLrcBounds(float jointLimitRad, float lrcCompliance);
 
   void step(float dt, int iters, bool useLrc, bool useBounds, const glm::vec3& gravity);

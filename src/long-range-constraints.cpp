@@ -5,6 +5,7 @@
 #include "SceneManager.h"
 #include "ChainLRCScene.h"
 #include "ChainAngleBoundsScene.h"
+#include "ChainFreeScene.h"
 
 static SceneManager g_sceneManager;
 
@@ -33,6 +34,10 @@ static void keyboard(unsigned char key, int x, int y) {
     g_sceneManager.setActive(1);
     return;
   }
+  if (key == '3') {
+    g_sceneManager.setActive(2);
+    return;
+  }
 
   IScene* s = g_sceneManager.active();
   if (s) s->keyboard(key, x, y);
@@ -57,6 +62,7 @@ int main(int argc, char** argv) {
   std::printf("Long Range Constraints for Rigid Body Simulations\n");
   std::printf("  1: Phase A (MaxDistance LRC)\n");
   std::printf("  2: Phase B (Angle->Distance Bounds)\n");
+  std::printf("  3: Phase C (Free Chains)\n");
 
   glutInit(&argc, argv);
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
@@ -68,6 +74,7 @@ int main(int argc, char** argv) {
 
   g_sceneManager.add(std::make_unique<ChainLRCScene>());
   g_sceneManager.add(std::make_unique<ChainAngleBoundsScene>());
+  g_sceneManager.add(std::make_unique<ChainFreeScene>());
   g_sceneManager.setActive(0);
 
   glutDisplayFunc(display);
