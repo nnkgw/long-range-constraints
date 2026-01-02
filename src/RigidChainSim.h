@@ -73,15 +73,16 @@ public:
   void clear();
 
   void buildVerticalChain(int numBodies,
-                          const glm::vec3& boxHalf,
-                          float mass,
-                          const glm::vec3& rootPos,
-                          bool kinematicRoot = true);
+                        const glm::vec3& boxHalf,
+                        float mass,
+                        const glm::vec3& rootPos,
+                        bool kinematicRoot = true);
 
   void buildLrcMax(float lrcCompliance);
-  void buildLrcFreeMaxHierarchy(float lrcCompliance, int minSpan = 2);
-
   void buildLrcBounds(float jointLimitRad, float lrcCompliance);
+
+  // Phase C: free chain - hierarchical max-distance constraints between joint points.
+  void buildLrcFreeMaxHierarchy(float lrcCompliance);
 
   void step(float dt, int iters, bool useLrc, bool useBounds, const glm::vec3& gravity);
 

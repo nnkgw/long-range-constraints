@@ -9,12 +9,13 @@ public:
   void reset() override;
   void display() override;
   void keyboard(unsigned char key, int x, int y) override;
-  const char* name() const override { return "Phase C (Free Chains)"; }
+  const char* name() const override { return "Phase C1 (Free chain + Follow Cam)"; }
   void usage() const override;
 
 private:
   void simulateStep(float dt) override;
   void drawSceneContents() override;
+  void onFrameEnd() override;
 
   void buildScene();
 
@@ -25,5 +26,5 @@ private:
   float jointCompliance_ = 0.0f;
   float lrcCompliance_ = 0.0f;
 
-  bool drawAllLrc_ = false;
+  bool followCam_ = true;
 };

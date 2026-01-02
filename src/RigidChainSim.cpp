@@ -350,48 +350,6 @@ void ChainSystem::buildLrcMax(float lrcCompliance) {
   }
 }
 
-void ChainSystem::buildLrcFreeMaxHierarchy(float lrcCompliance, int minSpan) {
-  lrcMax_.clear();
-  lrcBounds_.clear();
-
-  int nb = (int)bodies_.size();
-  if (nb < 2) return;
-
-  // Nodes along the chain: we use the top point of each body, plus the bottom point of the last body.
-  const int nodeCount = nb + 1;
-  std::vector<int> nodeBody(nodeCount, -1);
-  std::vector<glm::vec3> nodeLocal(nodeCount, glm::vec3(0.0f));
-  for (int i = 0; i < nb; ++i) {
-    nodeBody[i] = i;
-    nodeLocal[i] = childAnchorLocal_;
-  }
-  nodeBody[nb] = nb - 1;
-  nodeLocal[nb] = rootAnchorLocal_;
-
-  // Hierarchical links with power-of-two spans (O(n log n)).
-  int span = std::max(2, minSpan);
-  while (span < nodeCount) {
-    for (int i = 0; i + span < nodeCount; ++i) {
-      int a = nodeBody[i];
-      int b = nodeBody[i + span];
-      if (a < 0 || b < 0) continue;
-      if (a == b) continue;
-
-      MaxDistanceConstraint lc;
-      lc.a = a;
-      lc.b = b;
-      lc.la = nodeLocal[i];
-      lc.lb = nodeLocal[i + span];
-      lc.maxDist = (float)span * segLen_;
-      lc.lambda = 0.0f;
-      lc.compliance = lrcCompliance;
-      lrcMax_.push_back(lc);
-    }
-    span *= 2;
-  }
-}
-
-
 DistanceBoundSequence computeDistanceBoundsFromAngleLimits(int numSegments,
                                                           float segLen,
                                                           float restAngleRad,
@@ -477,6 +435,35 @@ void ChainSystem::buildLrcBounds(float jointLimitRad, float lrcCompliance) {
     lc.lambda = 0.0f;
     lc.compliance = lrcCompliance;
     lrcBounds_.push_back(lc);
+  }
+}
+
+
+void ChainSystem::buildLrcFreeMaxHierarchy(float lrcCompliance) {
+  lrcMax_.clear();
+  lrcBounds_.clear();
+
+  int nb = (int)bodies_.size();
+  int nj = nb - 1; // number of joint points
+  if (nj < 3) return;
+
+  // Joint k is the point between bodies k and k+1.
+  // We represent it on body (k+1) at local childAnchorLocal_.
+  // For a span of s segments, the straight-chain max distance is s * segLen_.
+  for (int stride = 2; stride <= nj - 1; stride *= 2) {
+    for (int j0 = 0; j0 + stride < nj; ++j0) {
+      int j1 = j0 + stride;
+
+      MaxDistanceConstraint lc;
+      lc.a = j0 + 1;
+      lc.b = j1 + 1;
+      lc.la = childAnchorLocal_;
+      lc.lb = childAnchorLocal_;
+      lc.maxDist = (float)stride * segLen_;
+      lc.lambda = 0.0f;
+      lc.compliance = lrcCompliance;
+      lrcMax_.push_back(lc);
+    }
   }
 }
 

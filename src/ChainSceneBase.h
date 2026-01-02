@@ -23,6 +23,9 @@ protected:
   virtual void simulateStep(float dt) = 0;
   virtual void drawSceneContents() = 0;
 
+  // Optional hook called once per rendered frame after sub-steps.
+  virtual void onFrameEnd() {}
+
   // Common camera state (matches the original single-file demo style).
   float camYaw_ = 0.0f;
   float camPitch_ = 0.6f;

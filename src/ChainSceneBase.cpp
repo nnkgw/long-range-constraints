@@ -39,6 +39,8 @@ void ChainSceneBase::idle() {
     ++steps;
   }
 
+  onFrameEnd();
+
   float simEnd = (float)glutGet(GLUT_ELAPSED_TIME);
   lastSimMs_ = (simEnd - simStart);
 
