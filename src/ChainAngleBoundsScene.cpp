@@ -124,8 +124,7 @@ void ChainAngleBoundsScene::drawSceneContents() {
     glPopMatrix();
   }
 
-  // Match Phase A visuals: joint points in red.
-  glPointSize(6.0f);
+  glPointSize(6.0f); // joint points in red.
   glBegin(GL_POINTS);
   glColor3f(1.0f, 0.2f, 0.2f);
   for (int j = 0; j < (int)chain_.joints().size(); ++j) {
@@ -235,7 +234,7 @@ void ChainAngleBoundsScene::drawSceneContents() {
       bool violated = (dist < c.minDist - 1e-4f) || (dist > c.maxDist + 1e-4f);
 
       if (violated) {
-        glColor3f(1.0f, 0.3f, 0.2f);
+        glColor3f(0.2f, 0.9f, 0.2f);
         glVertex3fv(glm::value_ptr(p0));
         glVertex3fv(glm::value_ptr(pj));
       }

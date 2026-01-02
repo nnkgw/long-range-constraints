@@ -10,4 +10,5 @@
 Unofficial implementation of "Long Range Constraints for Rigid Body Simulations"(SCA 2017)
 
 ## download
-- [long-range-constraints.exe (windows)](https://raw.githubusercontent.com/nnkgw/long-range-constraints/main/bin/iperf.exe)
+- [long-range-constraints.exe (windows)](https://raw.githubusercontent.com/nnkgw/long-range-constraints/main/bin/long-range-constraints.exe)
+- [long-range-constraints (macos)](https://raw.githubusercontent.com/nnkgw/long-range-constraints/main/bin/long-range-constraints)
