@@ -52,6 +52,8 @@ void ChainFreeScene::usage() const {
   std::printf("Phase C1 (Free chain + Follow Cam)\n");
   std::printf("  3 : switch to this scene\n");
   std::printf("  L : toggle LRC\n");
+  std::printf("  V : toggle hierarchy visualization\n");
+  std::printf("  , . : prev / next hierarchy level (all = -1)\n");
   std::printf("  [ ] : decrease / increase iterations\n");
   std::printf("  C : toggle follow camera\n");
   std::printf("  R : reset scene\n");
@@ -141,6 +143,43 @@ void ChainFreeScene::drawSceneContents() {
     glVertex3fv(glm::value_ptr(p));
   }
   glEnd();
+
+  if (showHierarchy_ && useLrc_) {
+    const std::vector<lrc::MaxDistanceConstraint>& lrcs = chain_.lrcMax();
+    const std::vector<int>& lb = chain_.lrcMaxLevelBegin();
+    const std::vector<int>& le = chain_.lrcMaxLevelEnd();
+    int nLevels = (int)std::min(lb.size(), le.size());
+    if (nLevels > 0 && !lrcs.empty()) {
+      glLineWidth(2.0f);
+      glBegin(GL_LINES);
+      for (int lvl = 0; lvl < nLevels; ++lvl) {
+        if (hierarchyLevel_ >= 0 && lvl != hierarchyLevel_) continue;
+        int begin = std::max(0, lb[lvl]);
+        int end   = std::min((int)lrcs.size(), le[lvl]);
+
+        float t = (nLevels > 1) ? ((float)lvl / (float)(nLevels - 1)) : 0.0f;
+        glm::vec3 baseCol(0.2f + 0.6f * (1.0f - t), 0.6f + 0.3f * t, 1.0f - 0.5f * t);
+
+        for (int i = begin; i < end; ++i) {
+          const lrc::MaxDistanceConstraint& c = lrcs[i];
+          if (c.a < 0 || c.b < 0) continue;
+          if (c.a >= (int)chain_.bodies().size() || c.b >= (int)chain_.bodies().size()) continue;
+
+          glm::vec3 pA = worldPoint(chain_.bodies()[c.a], c.la);
+          glm::vec3 pB = worldPoint(chain_.bodies()[c.b], c.lb);
+          float dist = glm::length(pB - pA);
+
+          if (dist > c.maxDist + 1e-4f) glColor3f(1.0f, 0.15f, 0.15f);
+          else glColor3fv(glm::value_ptr(baseCol));
+
+          glVertex3fv(glm::value_ptr(pA));
+          glVertex3fv(glm::value_ptr(pB));
+        }
+      }
+      glEnd();
+      glLineWidth(1.0f);
+    }
+  }
 }
 
 void ChainFreeScene::display() {
@@ -159,6 +198,29 @@ void ChainFreeScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
   switch (key) {
     case 'l': case 'L':
       useLrc_ = !useLrc_;
+      updateWindowTitle();
+      break;
+    case 'v': case 'V':
+      showHierarchy_ = !showHierarchy_;
+      updateWindowTitle();
+      break;
+    case ',':
+      if (!chain_.lrcMaxLevelBegin().empty()) {
+        int n = (int)chain_.lrcMaxLevelBegin().size();
+        if (hierarchyLevel_ < 0) hierarchyLevel_ = n - 1;
+        else hierarchyLevel_ = std::max(-1, hierarchyLevel_ - 1);
+      }
+      updateWindowTitle();
+      break;
+    case '.':
+      if (!chain_.lrcMaxLevelBegin().empty()) {
+        int n = (int)chain_.lrcMaxLevelBegin().size();
+        if (hierarchyLevel_ < 0) hierarchyLevel_ = 0;
+        else {
+          hierarchyLevel_ += 1;
+          if (hierarchyLevel_ >= n) hierarchyLevel_ = -1;
+        }
+      }
       updateWindowTitle();
       break;
     case '[':

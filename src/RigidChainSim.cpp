@@ -271,6 +271,8 @@ void ChainSystem::clear() {
   joints_.clear();
   lrcMax_.clear();
   lrcBounds_.clear();
+  lrcMaxLevelBegin_.clear();
+  lrcMaxLevelEnd_.clear();
 }
 
 void ChainSystem::buildVerticalChain(int numBodies,
@@ -323,6 +325,8 @@ void ChainSystem::buildVerticalChain(int numBodies,
 void ChainSystem::buildLrcMax(float lrcCompliance) {
   lrcMax_.clear();
   lrcBounds_.clear();
+  lrcMaxLevelBegin_.clear();
+  lrcMaxLevelEnd_.clear();
 
   int nb = (int)bodies_.size();
   if (nb < 3) return;
@@ -409,6 +413,8 @@ DistanceBoundSequence computeDistanceBoundsFromAngleLimits(int numSegments,
 void ChainSystem::buildLrcBounds(float jointLimitRad, float lrcCompliance) {
   lrcMax_.clear();
   lrcBounds_.clear();
+  lrcMaxLevelBegin_.clear();
+  lrcMaxLevelEnd_.clear();
 
   int nb = (int)bodies_.size();
   if (nb < 3) return;
@@ -442,6 +448,8 @@ void ChainSystem::buildLrcBounds(float jointLimitRad, float lrcCompliance) {
 void ChainSystem::buildLrcFreeMaxHierarchy(float lrcCompliance) {
   lrcMax_.clear();
   lrcBounds_.clear();
+  lrcMaxLevelBegin_.clear();
+  lrcMaxLevelEnd_.clear();
 
   int nb = (int)bodies_.size();
   int nj = nb - 1; // number of joint points
@@ -451,6 +459,7 @@ void ChainSystem::buildLrcFreeMaxHierarchy(float lrcCompliance) {
   // We represent it on body (k+1) at local childAnchorLocal_.
   // For a span of s segments, the straight-chain max distance is s * segLen_.
   for (int stride = 2; stride <= nj - 1; stride *= 2) {
+    int begin = (int)lrcMax_.size();
     for (int j0 = 0; j0 + stride < nj; ++j0) {
       int j1 = j0 + stride;
 
@@ -463,6 +472,11 @@ void ChainSystem::buildLrcFreeMaxHierarchy(float lrcCompliance) {
       lc.lambda = 0.0f;
       lc.compliance = lrcCompliance;
       lrcMax_.push_back(lc);
+    }
+    int end = (int)lrcMax_.size();
+    if (end > begin) {
+      lrcMaxLevelBegin_.push_back(begin);
+      lrcMaxLevelEnd_.push_back(end);
     }
   }
 }

@@ -27,4 +27,7 @@ private:
   float lrcCompliance_ = 0.0f;
 
   bool followCam_ = true;
+
+  bool showHierarchy_ = true;
+  int hierarchyLevel_ = -1; // -1 means all levels.
 };

@@ -95,6 +95,11 @@ public:
   const std::vector<MaxDistanceConstraint>& lrcMax() const { return lrcMax_; }
   const std::vector<DistanceBoundsConstraint>& lrcBounds() const { return lrcBounds_; }
 
+  // Phase C: dense hierarchy level ranges for lrcMax_ built by buildLrcFreeMaxHierarchy().
+  // Each level is a contiguous range [begin,end) in lrcMax_.
+  const std::vector<int>& lrcMaxLevelBegin() const { return lrcMaxLevelBegin_; }
+  const std::vector<int>& lrcMaxLevelEnd() const { return lrcMaxLevelEnd_; }
+
   glm::vec3 rootAnchorLocal() const { return rootAnchorLocal_; }
   glm::vec3 childAnchorLocal() const { return childAnchorLocal_; }
   float segmentLen() const { return segLen_; }
@@ -105,6 +110,10 @@ private:
   std::vector<JointPointConstraint> joints_;
   std::vector<MaxDistanceConstraint> lrcMax_;
   std::vector<DistanceBoundsConstraint> lrcBounds_;
+
+  // Only populated in Phase C (buildLrcFreeMaxHierarchy). Empty for other phases.
+  std::vector<int> lrcMaxLevelBegin_;
+  std::vector<int> lrcMaxLevelEnd_;
 
   glm::vec3 rootAnchorLocal_{0.0f, -0.10f, 0.0f};
   glm::vec3 childAnchorLocal_{0.0f,  0.10f, 0.0f};
