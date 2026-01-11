@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 
 #include "DrawUtils.h"
 #include "GlutCompat.h"
@@ -172,9 +173,59 @@ void ChainFreeScene::drawSceneContents() {
           if (dist > c.maxDist + 1e-4f) glColor3f(1.0f, 0.15f, 0.15f);
           else glColor3fv(glm::value_ptr(baseCol));
 
-          glVertex3fv(glm::value_ptr(pA));
-          glVertex3fv(glm::value_ptr(pB));
-        }
+          
+// Draw as a "bulged" polyline to reduce overlap between hierarchy levels.
+// The bulge direction is chosen perpendicular to both the segment direction and the view direction,
+// so the arc tends to expand sideways in screen space.
+glm::vec3 seg = pB - pA;
+float segLen = glm::length(seg);
+if (segLen < 1e-8f) {
+  continue;
+}
+glm::vec3 segDir = seg / segLen;
+
+// Approximate camera forward direction in world space from the simple yaw/pitch camera used in ChainSceneBase.
+float cy = std::cos(camYaw_);
+float sy = std::sin(camYaw_);
+float cp = std::cos(camPitch_);
+float sp = std::sin(camPitch_);
+glm::vec3 viewDir(-sy * cp, -sp, -cy * cp);
+
+glm::vec3 bulgeDir = glm::cross(segDir, viewDir);
+float bLen = glm::length(bulgeDir);
+if (bLen < 1e-6f) {
+  // Fallback if segment is nearly parallel to the view direction.
+  bulgeDir = glm::cross(segDir, glm::vec3(0.0f, 1.0f, 0.0f));
+  bLen = glm::length(bulgeDir);
+}
+if (bLen < 1e-6f) {
+  bulgeDir = glm::cross(segDir, glm::vec3(1.0f, 0.0f, 0.0f));
+  bLen = glm::length(bulgeDir);
+}
+if (bLen < 1e-6f) {
+  continue;
+}
+bulgeDir /= bLen;
+
+// Alternate side per level to reduce overlap further.
+float side = (lvl & 1) ? 1.0f : -1.0f;
+bulgeDir *= side;
+
+// Bulge amount per hierarchy level (debug-only visualization).
+float amp = chain_.segmentLen() * (0.25f + 0.18f * (float)lvl);
+
+// Sample a smooth arc using sin(pi * t) envelope.
+const int slices = 8;
+glm::vec3 prev = pA;
+for (int s = 1; s <= slices; ++s) {
+  float tSeg = (float)s / (float)slices;
+  glm::vec3 cur = glm::mix(pA, pB, tSeg);
+  float w = std::sin(lrc::kPi * tSeg);
+  cur += bulgeDir * (amp * w);
+  glVertex3fv(glm::value_ptr(prev));
+  glVertex3fv(glm::value_ptr(cur));
+  prev = cur;
+}}
       }
       glEnd();
       glLineWidth(1.0f);
