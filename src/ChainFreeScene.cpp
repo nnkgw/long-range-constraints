@@ -57,6 +57,7 @@ void ChainFreeScene::usage() const {
   std::printf("  , . : prev / next hierarchy level (all = -1)\n");
   std::printf("  [ ] : decrease / increase iterations\n");
   std::printf("  C : toggle follow camera\n");
+  std::printf("  SPACE : toggle pause\n");
   std::printf("  R : reset scene\n");
   std::printf("  ESC : quit\n");
 }
@@ -91,6 +92,7 @@ void ChainFreeScene::reset() {
 }
 
 void ChainFreeScene::simulateStep(float dt) {
+  if (paused_) return;
   chain_.step(dt, iters_, useLrc_, false, gravity_);
 }
 
@@ -247,6 +249,9 @@ void ChainFreeScene::display() {
 
 void ChainFreeScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
   switch (key) {
+    case ' ':
+      paused_ = !paused_;
+      break;
     case 'l': case 'L':
       useLrc_ = !useLrc_;
       updateWindowTitle();

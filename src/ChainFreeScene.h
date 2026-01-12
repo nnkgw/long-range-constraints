@@ -28,6 +28,8 @@ private:
 
   bool followCam_ = true;
 
+  bool paused_ = false;
+
   bool showHierarchy_ = true;
   int hierarchyLevel_ = -1; // -1 means all levels.
 };
