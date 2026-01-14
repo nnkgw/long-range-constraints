@@ -189,56 +189,115 @@ void ContactGraphScene::buildContactGraph() {
 }
 
 void ContactGraphScene::computeSupportingContacts() {
+  // Reset flags.
   bodySupported_.assign(bodies_.size(), false);
   for (Contact& c : contacts_) c.supporting = false;
 
-  // Iteratively mark bodies supported from the bottom up.
-  // A body is supported if its COM projection lies within the convex hull of the
-  // projections of its static contacts to supported "lower" bodies.
-  bool changed = true;
-  for (int iter = 0; iter < 32 && changed; ++iter) {
-    changed = false;
-    for (int bi = 0; bi < (int)bodies_.size(); ++bi) {
-      if (bodySupported_[bi]) continue;
+  if (contacts_.empty()) return;
 
-      std::vector<int> cidx;
-      std::vector<glm::vec2> pts;
+  // Build adjacency from the contact graph edges.
+  std::vector<std::vector<int>> adj(contacts_.size());
+  adj.reserve(contacts_.size());
+  for (const std::pair<int, int>& e : graphEdges_) {
+    if (e.first < 0 || e.second < 0) continue;
+    if (e.first >= (int)contacts_.size() || e.second >= (int)contacts_.size()) continue;
+    adj[e.first].push_back(e.second);
+    adj[e.second].push_back(e.first);
+  }
 
-      for (int ci = 0; ci < (int)contacts_.size(); ++ci) {
-        const Contact& c = contacts_[ci];
-        if (c.upper != bi) continue;
-        if (!c.isStatic) continue;
-        if (c.lower >= 0 && !bodySupported_[c.lower]) continue;
+  // Process contacts bottom-to-top (along +Y in this prototype) as described in Sec. 3.6.
+  std::vector<int> order(contacts_.size());
+  for (int i = 0; i < (int)order.size(); ++i) order[i] = i;
+  std::sort(order.begin(), order.end(), [&](int a, int b) {
+    return contacts_[a].p.y < contacts_[b].p.y;
+  });
 
-        cidx.push_back(ci);
-        pts.push_back(glm::vec2(c.p.x, c.p.z));
-      }
+  std::vector<bool> processed(contacts_.size(), false);
 
-      if (pts.empty()) continue;
+  // First pass: classify supporting contacts using adjacency to already-classified supporting contacts.
+  for (int k = 0; k < (int)order.size(); ++k) {
+    int ci = order[k];
+    Contact& c = contacts_[ci];
 
-      glm::vec2 comP(bodies_[bi].x.x, bodies_[bi].x.z);
-
-      bool supported = false;
-      if (pts.size() == 1) {
-        supported = (glm::length(pts[0] - comP) < 1e-4f);
-      } else if (pts.size() == 2) {
-        supported = pointOnSegment2D(pts[0], pts[1], comP);
-      } else {
-        std::vector<glm::vec2> hull = convexHull2D(pts);
-        if (hull.size() == 2) supported = pointOnSegment2D(hull[0], hull[1], comP);
-        else if (hull.size() >= 3) supported = pointInConvexPolygon2D(hull, comP);
-      }
-
-      if (supported) {
-        bodySupported_[bi] = true;
-        changed = true;
-        for (int idx : cidx) contacts_[idx].supporting = true;
-      }
+    // Dynamic contacts cannot be supporting in Sec. 3.6.
+    if (!c.isStatic) {
+      processed[ci] = true;
+      continue;
     }
+
+    // Contacts to the ground are supporting seeds.
+    if (c.lower == -1) {
+      c.supporting = true;
+      processed[ci] = true;
+      continue;
+    }
+
+    // Gather adjacent supporting contacts already processed (i.e., below in the bottom-to-top order).
+    std::vector<glm::vec2> pts;
+    pts.reserve(adj[ci].size());
+    for (int aj : adj[ci]) {
+      if (aj < 0 || aj >= (int)contacts_.size()) continue;
+      if (!processed[aj]) continue;
+      const Contact& s = contacts_[aj];
+      if (!s.supporting) continue;
+      if (!s.isStatic) continue;
+      pts.push_back(glm::vec2(s.p.x, s.p.z));
+    }
+
+    glm::vec2 p2(c.p.x, c.p.z);
+
+    bool supported = false;
+    if (pts.size() == 1) {
+      supported = (glm::length(pts[0] - p2) < 1e-4f);
+    } else if (pts.size() == 2) {
+      supported = pointOnSegment2D(pts[0], pts[1], p2);
+    } else if (pts.size() >= 3) {
+      std::vector<glm::vec2> hull = convexHull2D(pts);
+      if (hull.size() == 2) supported = pointOnSegment2D(hull[0], hull[1], p2);
+      else if (hull.size() >= 3) supported = pointInConvexPolygon2D(hull, p2);
+    }
+
+    if (supported) c.supporting = true;
+    processed[ci] = true;
+  }
+
+  // Second pass: classify supported bodies using the hull of adjacent supporting contacts below the body.
+  for (int bi = 0; bi < (int)bodies_.size(); ++bi) {
+    const lrc::RigidBody& b = bodies_[bi];
+    glm::vec2 comP(b.x.x, b.x.z);
+
+    std::vector<glm::vec2> pts;
+    for (int ci = 0; ci < (int)contacts_.size(); ++ci) {
+      const Contact& c = contacts_[ci];
+      if (!c.supporting) continue;
+      if (!c.isStatic) continue;
+      if (c.upper != bi && c.lower != bi) continue;
+
+      // Only consider supporting contacts geometrically below the COM.
+      if (c.p.y > b.x.y + 1e-4f) continue;
+
+      pts.push_back(glm::vec2(c.p.x, c.p.z));
+    }
+
+    if (pts.empty()) continue;
+
+    bool supported = false;
+    if (pts.size() == 1) {
+      supported = (glm::length(pts[0] - comP) < 1e-4f);
+    } else if (pts.size() == 2) {
+      supported = pointOnSegment2D(pts[0], pts[1], comP);
+    } else {
+      std::vector<glm::vec2> hull = convexHull2D(pts);
+      if (hull.size() == 2) supported = pointOnSegment2D(hull[0], hull[1], comP);
+      else if (hull.size() >= 3) supported = pointInConvexPolygon2D(hull, comP);
+    }
+
+    bodySupported_[bi] = supported;
   }
 }
 
 void ContactGraphScene::addBoxFloorContacts(int bodyIdx) {
+(int bodyIdx) {
   const lrc::RigidBody& b = bodies_[bodyIdx];
   glm::vec3 bMin = aabbMin(b);
   if (std::fabs(bMin.y - groundY_) > 1e-4f) return;
