@@ -55,30 +55,52 @@ void ContactGraphScene::buildScene() {
 
   driveTime_ = 0.0f;
 
-  // Build a small stack with a deliberate overhang so both supporting (red) and
-  // non-supporting (blue) contacts appear.
-  // Body 0: bottom box on the floor.
+  // Build a small blocky stack (Figure 12-style) that stays in view and
+  // generates a richer contact graph (several bodies have multiple supporting contacts).
+  //
+  // Index convention:
+  //  - bodies_[2] is the top body and is driven horizontally (dyn contact visualization).
+
+  float y0 = groundY_ + boxHalf_.y;
+  float y1 = y0 + 2.0f * boxHalf_.y;
+  float y2 = y1 + 2.0f * boxHalf_.y;
+
+  // Body 0: bottom center.
   lrc::RigidBody b0;
   b0.halfExtents = boxHalf_;
   b0.invMass = 1.0f;
   b0.invInertiaLocal = lrc::boxInvInertiaLocal(1.0f, b0.halfExtents);
-  b0.x = glm::vec3(0.0f, groundY_ + boxHalf_.y, 0.0f);
+  b0.x = glm::vec3(0.0f, y0, 0.0f);
   bodies_.push_back(b0);
 
-  // Body 1: centered on top of body 0.
+  // Body 1: middle center.
   lrc::RigidBody b1 = b0;
-  b1.x = glm::vec3(0.0f, b0.x.y + 2.0f * boxHalf_.y, 0.0f);
+  b1.x = glm::vec3(0.0f, y1, 0.0f);
   bodies_.push_back(b1);
 
-  // Body 2: overhanging on body 1 (will become "unsupported" in our test).
+  // Body 2: top (slightly offset to avoid perfect symmetry).
   lrc::RigidBody b2 = b0;
-  b2.x = glm::vec3(0.25f, b1.x.y + 2.0f * boxHalf_.y, 0.0f);
+  b2.x = glm::vec3(0.12f, y2, 0.0f);
   bodies_.push_back(b2);
 
-  // Body 3: a side box touching the floor (supported).
+  // Additional blocks to form a "stacked bricks" layout.
+  // Bottom layer (left / right).
   lrc::RigidBody b3 = b0;
-  b3.x = glm::vec3(-0.65f, groundY_ + boxHalf_.y, 0.0f);
+  b3.x = glm::vec3(-2.0f * boxHalf_.x, y0, 0.0f);
   bodies_.push_back(b3);
+
+  lrc::RigidBody b4 = b0;
+  b4.x = glm::vec3(2.0f * boxHalf_.x, y0, 0.0f);
+  bodies_.push_back(b4);
+
+  // Middle layer bridges (each overlaps two bottom blocks).
+  lrc::RigidBody b5 = b0;
+  b5.x = glm::vec3(-boxHalf_.x, y1, 0.0f);
+  bodies_.push_back(b5);
+
+  lrc::RigidBody b6 = b0;
+  b6.x = glm::vec3(boxHalf_.x, y1, 0.0f);
+  bodies_.push_back(b6);
 
   // Keep orientations identity for this step (AABB contacts).
   for (lrc::RigidBody& b : bodies_) {
@@ -297,7 +319,6 @@ void ContactGraphScene::computeSupportingContacts() {
 }
 
 void ContactGraphScene::addBoxFloorContacts(int bodyIdx) {
-(int bodyIdx) {
   const lrc::RigidBody& b = bodies_[bodyIdx];
   glm::vec3 bMin = aabbMin(b);
   if (std::fabs(bMin.y - groundY_) > 1e-4f) return;
