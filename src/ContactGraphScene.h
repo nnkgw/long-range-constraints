@@ -4,14 +4,14 @@
 
 #include "ChainSceneBase.h"
 
-// Step 0 for Section 3.6 (Contact graphs):
+// Step 1 for Section 3.6 (Contact graphs):
 // - Build a small stack of axis-aligned boxes.
 // - Generate simple contacts (box-floor and box-box) using AABB overlap.
 // - Build a contact graph (contacts are nodes; edges connect contacts acting on the same body).
 // - Classify "supporting" contacts by iteratively checking whether a body's center-of-mass projection
 //   lies inside the convex hull of the projections of its static contacts below it.
 //
-// This is an intentionally small step meant to be buildable and easy to validate.
+// This step adds a simple static-vs-dynamic contact classification (friction cone test).
 class ContactGraphScene final : public ChainSceneBase {
 public:
   ContactGraphScene();
@@ -20,7 +20,7 @@ public:
   void reset() override;
   void display() override;
   void keyboard(unsigned char key, int x, int y) override;
-  const char* name() const override { return "Phase D0 (Contact graphs - Step0)"; }
+  const char* name() const override { return "Phase D1 (Contact graphs - Step1)"; }
   void usage() const override;
 
 private:
@@ -45,6 +45,9 @@ private:
   void addBoxFloorContacts(int bodyIdx);
   void addBoxBoxContacts(int upperIdx, int lowerIdx);
 
+  bool isStaticContact(int upperIdx, int lowerIdx, const glm::vec3& p, const glm::vec3& n) const;
+
+
   // 2D helpers for the convex hull test in the plane orthogonal to gravity (XZ plane here).
   static float cross2(const glm::vec2& a, const glm::vec2& b);
   static float cross2(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c);
@@ -54,6 +57,7 @@ private:
 
   float groundY_ = -0.8f;
   glm::vec3 boxHalf_{0.18f, 0.10f, 0.12f};
+  float frictionMu_ = 0.8f;
 
   std::vector<lrc::RigidBody> bodies_;
   std::vector<Contact> contacts_;

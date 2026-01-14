@@ -37,13 +37,14 @@ ContactGraphScene::ContactGraphScene() {
 
 void ContactGraphScene::usage() const {
   std::printf("\n");
-  std::printf("Phase D0 (Contact graphs - Step0)\n");
+  std::printf("Phase D1 (Contact graphs - Step0)\n");
   std::printf("  4 : switch to this scene\n");
   std::printf("  G : toggle contact graph edges\n");
   std::printf("  P : toggle contact points\n");
   std::printf("  SPACE : toggle pause\n");
   std::printf("  R : reset scene\n");
   std::printf("  ESC : quit\n");
+  std::printf("  - Yellow points: dynamic (sliding) contacts (vt > eps).\n");
 }
 
 void ContactGraphScene::buildScene() {
@@ -236,9 +237,33 @@ void ContactGraphScene::addBoxFloorContacts(int bodyIdx) {
     c.lower = -1;
     c.p = corners[i];
     c.n = glm::vec3(0.0f, 1.0f, 0.0f);
-    c.isStatic = true;
+    c.isStatic = isStaticContact(c.upper, c.lower, c.p, c.n);
     contacts_.push_back(c);
   }
+}
+
+bool ContactGraphScene::isStaticContact(int upperIdx, int lowerIdx, const glm::vec3& p, const glm::vec3& n) const {
+  // Step 1: a very small "static vs dynamic" contact classification.
+  // We classify a contact as "static" when the relative tangential velocity at the contact is small.
+  // This is intentionally simple and primarily meant to support later steps (friction cone / impulses).
+  const float kStaticVelEps = 0.02f;
+
+  if (upperIdx < 0 || upperIdx >= (int)bodies_.size()) return true;
+
+  const lrc::RigidBody& A = bodies_[upperIdx];
+  glm::vec3 ra = p - A.x;
+  glm::vec3 va = A.v + glm::cross(A.w, ra);
+
+  glm::vec3 vb(0.0f);
+  if (lowerIdx >= 0 && lowerIdx < (int)bodies_.size()) {
+    const lrc::RigidBody& B = bodies_[lowerIdx];
+    glm::vec3 rb = p - B.x;
+    vb = B.v + glm::cross(B.w, rb);
+  }
+
+  glm::vec3 vrel = va - vb;
+  glm::vec3 vt = vrel - glm::dot(vrel, n) * n;
+  return glm::length(vt) < kStaticVelEps;
 }
 
 void ContactGraphScene::addBoxBoxContacts(int upperIdx, int lowerIdx) {
@@ -272,7 +297,7 @@ void ContactGraphScene::addBoxBoxContacts(int upperIdx, int lowerIdx) {
     c.lower = lowerIdx;
     c.p = corners[i];
     c.n = glm::vec3(0.0f, 1.0f, 0.0f);
-    c.isStatic = true;
+    c.isStatic = isStaticContact(c.upper, c.lower, c.p, c.n);
     contacts_.push_back(c);
   }
 }
@@ -351,10 +376,24 @@ bool ContactGraphScene::pointInConvexPolygon2D(const std::vector<glm::vec2>& pol
 
 void ContactGraphScene::onFrameEnd() {
   // Keep the title stable with a short summary.
+  int staticC = 0;
+  int dynC = 0;
   int supp = 0;
-  for (const Contact& c : contacts_) if (c.supporting) ++supp;
-  char extra[128];
-  std::snprintf(extra, sizeof(extra), "contacts=%d supporting=%d", (int)contacts_.size(), supp);
+  for (const Contact& c : contacts_) {
+    if (c.isStatic) ++staticC;
+    else ++dynC;
+    if (c.supporting) ++supp;
+  }
+  char extra[160];
+  std::snprintf(
+    extra,
+    sizeof(extra),
+    "contacts=%d static=%d dyn=%d supporting=%d",
+    (int)contacts_.size(),
+    staticC,
+    dynC,
+    supp
+  );
   updateWindowTitle(extra);
 }
 
@@ -384,7 +423,8 @@ void ContactGraphScene::drawSceneContents() {
     glPointSize(6.0f);
     glBegin(GL_POINTS);
     for (const Contact& c : contacts_) {
-      if (c.supporting) glColor3f(1.0f, 0.2f, 0.2f);
+      if (!c.isStatic) glColor3f(0.8f, 0.8f, 0.2f);
+      else if (c.supporting) glColor3f(1.0f, 0.2f, 0.2f);
       else glColor3f(0.2f, 0.6f, 1.0f);
       glVertex3fv(glm::value_ptr(c.p));
     }
