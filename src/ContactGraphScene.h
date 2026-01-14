@@ -70,4 +70,10 @@ private:
   bool paused_ = false;
   bool showContacts_ = true;
   bool showGraph_ = true;
+
+  // A tiny horizontal drive on the top body to intentionally create sliding (dynamic) contacts.
+  bool driveEnabled_ = true;
+  float driveTime_ = 0.0f;
+  float driveVelAmp_ = 0.10f; // m/s (small)
+  float driveHz_ = 0.7f;
 };

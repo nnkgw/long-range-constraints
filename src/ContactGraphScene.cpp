@@ -45,12 +45,15 @@ void ContactGraphScene::usage() const {
   std::printf("  R : reset scene\n");
   std::printf("  ESC : quit\n");
   std::printf("  - Yellow points: dynamic (sliding) contacts (vt > eps).\n");
+  std::printf("  - A small horizontal drive is applied to the top body to make dyn contacts visible.\n");
 }
 
 void ContactGraphScene::buildScene() {
   bodies_.clear();
   contacts_.clear();
   graphEdges_.clear();
+
+  driveTime_ = 0.0f;
 
   // Build a small stack with a deliberate overhang so both supporting (red) and
   // non-supporting (blue) contacts appear.
@@ -96,10 +99,29 @@ void ContactGraphScene::reset() {
   updateWindowTitle();
 }
 
-void ContactGraphScene::simulateStep(float /*dt*/) {
-  // Step 0 is a static visualization: no dynamics.
-  // The pause flag is kept so later steps can share the same UX.
+void ContactGraphScene::simulateStep(float dt) {
+  // Step 1: keep the geometry static, but apply a tiny horizontal drive to
+  // the top body so the simplified static-vs-dynamic classification produces
+  // visible "dyn" contacts.
   if (paused_) return;
+
+  driveTime_ += dt;
+
+  // Clear velocities (this scene is not a dynamics solver yet).
+  for (lrc::RigidBody& b : bodies_) {
+    b.v = glm::vec3(0.0f);
+    b.w = glm::vec3(0.0f);
+  }
+
+  // Apply a small periodic velocity to the top body.
+  if (driveEnabled_ && bodies_.size() >= 3) {
+    const float twoPi = 6.28318530718f;
+    float omega = twoPi * driveHz_;
+    float vx = driveVelAmp_ * std::cos(omega * driveTime_);
+    bodies_[2].v.x = vx;
+  }
+
+  rebuildContacts();
 }
 
 void ContactGraphScene::rebuildContacts() {
