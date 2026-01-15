@@ -1,4 +1,5 @@
-﻿#include "ContactGraphScene.h"
+// NOTE: Keep this file ASCII-only to avoid MSVC C4819 warnings on some code pages.
+#include "ContactGraphScene.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -23,7 +24,100 @@
 
 namespace {
 static float clampf(float x, float lo, float hi) {
-  return std::max(lo, std::min(hi, x));
+  return (std::max)(lo, (std::min)(hi, x));
+}
+
+static glm::vec3 obbSupportPointWorld(const lrc::RigidBody& b, const glm::vec3& dirW) {
+  const glm::mat3 R = glm::mat3_cast(b.q);
+  const glm::vec3 A[3] = { glm::vec3(R[0]), glm::vec3(R[1]), glm::vec3(R[2]) };
+  const float e[3] = { b.halfExtents.x, b.halfExtents.y, b.halfExtents.z };
+  glm::vec3 p = b.x;
+  for (int i = 0; i < 3; ++i) {
+    const float s = (glm::dot(A[i], dirW) >= 0.0f) ? 1.0f : -1.0f;
+    p += s * e[i] * A[i];
+  }
+  return p;
+}
+
+static bool obbAabbMtv(
+  const lrc::RigidBody& obb,
+  const lrc::RigidBody& aabb,
+  glm::vec3* outN,
+  float* outPen) {
+  const glm::mat3 R = glm::mat3_cast(obb.q);
+  const glm::vec3 A[3] = { glm::vec3(R[0]), glm::vec3(R[1]), glm::vec3(R[2]) };
+  const glm::vec3 B[3] = { glm::vec3(1, 0, 0), glm::vec3(0, 1, 0), glm::vec3(0, 0, 1) };
+
+  const float a[3] = { obb.halfExtents.x, obb.halfExtents.y, obb.halfExtents.z };
+  const float b[3] = { aabb.halfExtents.x, aabb.halfExtents.y, aabb.halfExtents.z };
+
+  // Rm[i][j] = dot(A[i], B[j]) == A[i][j] since B is the world basis.
+  float Rm[3][3];
+  float absR[3][3];
+  for (int i = 0; i < 3; ++i) {
+    Rm[i][0] = A[i].x;
+    Rm[i][1] = A[i].y;
+    Rm[i][2] = A[i].z;
+    for (int j = 0; j < 3; ++j) {
+      absR[i][j] = std::fabs(Rm[i][j]) + 1e-6f; // epsilon against parallel axes.
+    }
+  }
+
+  const glm::vec3 tW = aabb.x - obb.x;
+  const float tA[3] = { glm::dot(tW, A[0]), glm::dot(tW, A[1]), glm::dot(tW, A[2]) };
+  const float tB[3] = { tW.x, tW.y, tW.z };
+
+  float bestPen = std::numeric_limits<float>::infinity();
+  glm::vec3 bestN(0);
+
+  auto tryAxis = [&](const glm::vec3& axisUnit, float proj, float ra, float rb) -> bool {
+    const float pen = (ra + rb) - std::fabs(proj);
+    if (pen < 0.0f) return false; // separating axis
+    if (pen < bestPen) {
+      bestPen = pen;
+      // Move OBB away from AABB (translate OBB by bestN * bestPen).
+      bestN = (proj < 0.0f) ? axisUnit : -axisUnit;
+    }
+    return true;
+  };
+
+  // Axes A0, A1, A2 (OBB local axes).
+  for (int i = 0; i < 3; ++i) {
+    const float ra = a[i];
+    const float rb = b[0] * absR[i][0] + b[1] * absR[i][1] + b[2] * absR[i][2];
+    if (!tryAxis(A[i], tA[i], ra, rb)) return false;
+  }
+
+  // Axes B0, B1, B2 (world axes / AABB axes).
+  for (int j = 0; j < 3; ++j) {
+    const float ra = a[0] * absR[0][j] + a[1] * absR[1][j] + a[2] * absR[2][j];
+    const float rb = b[j];
+    if (!tryAxis(B[j], tB[j], ra, rb)) return false;
+  }
+
+  // Axes Ai x Bj (9 cross-product axes).
+  for (int i = 0; i < 3; ++i) {
+    const int i1 = (i + 1) % 3;
+    const int i2 = (i + 2) % 3;
+    for (int j = 0; j < 3; ++j) {
+      const int j1 = (j + 1) % 3;
+      const int j2 = (j + 2) % 3;
+      const glm::vec3 L = glm::cross(A[i], B[j]);
+      const float len2 = glm::dot(L, L);
+      if (len2 < 1e-12f) continue; // nearly parallel => skip
+      const glm::vec3 axisUnit = L * (1.0f / std::sqrt(len2));
+
+      const float ra = a[i1] * absR[i2][j] + a[i2] * absR[i1][j];
+      const float rb = b[j1] * absR[i][j2] + b[j2] * absR[i][j1];
+      const float proj = tA[i2] * Rm[i1][j] - tA[i1] * Rm[i2][j];
+      if (!tryAxis(axisUnit, proj, ra, rb)) return false;
+    }
+  }
+
+  if (!std::isfinite(bestPen)) return false;
+  if (outN) *outN = bestN;
+  if (outPen) *outPen = bestPen;
+  return true;
 }
 
 static glm::vec2 closestPointOnSegment2D(const glm::vec2& a, const glm::vec2& b, const glm::vec2& p) {
@@ -367,7 +461,7 @@ void ContactGraphScene::simulateStep(float dt) {
 
   lrc::RigidBody& top = bodies_[2];
 
-  // Horizontal drive (weak PD velocity injection) – matches the pre-fall behavior.
+  // Horizontal drive (weak PD velocity injection) - matches the pre-fall behavior.
   float vxCmd = 0.0f;
   if (driveEnabled_) {
     float omega = 2.0f * 3.1415926535f * driveHz_;
@@ -571,6 +665,7 @@ void ContactGraphScene::simulateStep(float dt) {
       const lrc::RigidBody& s = bodies_[bi];
       const glm::vec3 bmin = s.x - s.halfExtents;
       const glm::vec3 bmax = s.x + s.halfExtents;
+      bool didPush = false;
 
       // A) Push out top samples that end up inside the AABB.
       for (int i = 0; i < kObbSamplePointCount; ++i) {
@@ -599,6 +694,7 @@ void ContactGraphScene::simulateStep(float dt) {
         if (dz1 < best) { best = dz1; n = glm::vec3( 0.0f, 0.0f, 1.0f); }
 
         solvePointPenetration(top, p, n, best + kSlop);
+        didPush = true;
       }
 
       // B) Also handle the opposite containment case (static corners inside the OBB).
@@ -612,7 +708,23 @@ void ContactGraphScene::simulateStep(float dt) {
         if (pointInsideObb(top, sc[i], &nWorld, &pen)) {
           // For a fixed point inside the OBB, moving the OBB opposite to the outward normal expels it.
           solvePointPenetration(top, sc[i], -nWorld, pen + kSlop);
+          didPush = true;
         }
+      }
+
+      // C) Face-level resolution (OBB vs AABB) for the common "face-face" overlap case where
+      // no corners or sample points are strictly contained.
+      if (/*!didPush*/1) {
+        glm::vec3 nSat(0.0f);
+        float penSat = 0.0f;
+        if (obbAabbMtv(top, s, &nSat, &penSat) && penSat > 1e-6f) {
+          const glm::vec3 p = obbSupportPointWorld(top, -nSat);
+          solvePointPenetration(top, p, nSat, penSat + kSlop);
+        }
+        top.v.x *= 0.0001f;
+        top.v.z *= 0.0001f;
+        top.v.y *= 0.00001f;
+        top.w   *= 0.0001f;
       }
     }
 
