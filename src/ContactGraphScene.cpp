@@ -1,4 +1,4 @@
-#include "ContactGraphScene.h"
+﻿#include "ContactGraphScene.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -165,19 +165,19 @@ static void obbSamplePointsWorld(const lrc::RigidBody& b, glm::vec3 out[kObbSamp
   }
 
   // 12 edge midpoints
-  // X edges: x=0, y=±h.y, z=±h.z
+  // X edges: x=0, y= +-h.y, z= +-h.z
   for (int sy = -1; sy <= 1; sy += 2) {
     for (int sz = -1; sz <= 1; sz += 2) {
       emitLocal(glm::vec3(0.0f, (float)sy * h.y, (float)sz * h.z));
     }
   }
-  // Y edges: y=0, x=±h.x, z=±h.z
+  // Y edges: y=0, x=+-h.x, z=+-h.z
   for (int sx = -1; sx <= 1; sx += 2) {
     for (int sz = -1; sz <= 1; sz += 2) {
       emitLocal(glm::vec3((float)sx * h.x, 0.0f, (float)sz * h.z));
     }
   }
-  // Z edges: z=0, x=±h.x, y=±h.y
+  // Z edges: z=0, x=+-h.x, y=+-h.y
   for (int sx = -1; sx <= 1; sx += 2) {
     for (int sy = -1; sy <= 1; sy += 2) {
       emitLocal(glm::vec3((float)sx * h.x, (float)sy * h.y, 0.0f));
@@ -266,6 +266,7 @@ void ContactGraphScene::buildScene() {
 
   driveTime_ = 0.0f;
   topFreeFall_ = false;
+  topOnFloor_ = false;
   fallHasPivot_ = false;
   fallSupportLower_ = -2;
   fallPivot_ = glm::vec3(0.0f);
@@ -374,12 +375,19 @@ void ContactGraphScene::simulateStep(float dt) {
     float errorX = targetX - top.x.x;
     vxCmd = clampf(driveKp_ * errorX, -driveVelAmp_, driveVelAmp_);
   }
-  top.v.x = vxCmd;
-  top.v.z = 0.0f;
+  if (topFreeFall_ && topOnFloor_) vxCmd = 0.0f;
+  if (topFreeFall_ && topOnFloor_) {
+    top.v.x = 0.0f;
+    top.v.z = 0.0f;
+  } else {
+    top.v.x = vxCmd;
+    top.v.z = 0.0f;
+  }
 
   // If falling toggle is off, force the top back to kinematic mode.
   if (!driveAllowFall_) {
     topFreeFall_ = false;
+    topOnFloor_ = false;
   fallHasPivot_ = false;
   fallSupportLower_ = -2;
   fallPivot_ = glm::vec3(0.0f);
@@ -613,6 +621,33 @@ void ContactGraphScene::simulateStep(float dt) {
   // Update velocities from the corrected pose.
   top.v = (top.x - xPrev) / dt;
   top.w = lrc::quatToOmegaWorld(qPrev, top.q, dt);
+
+  // Once the top has fallen and settled onto the floor, stop horizontal drifting.
+  if (topFreeFall_) {
+    bool onFloor = false;
+    {
+      glm::vec3 samples[kObbSamplePointCount];
+      obbSamplePointsWorld(top, samples);
+      float minY = samples[0].y;
+      for (int i = 1; i < kObbSamplePointCount; ++i) {
+        if (samples[i].y < minY) minY = samples[i].y;
+      }
+      onFloor = (minY <= groundY_ + 2e-3f);
+    }
+
+    if (onFloor && std::fabs(top.v.y) < 0.2f) {
+      topOnFloor_ = true;
+    }
+
+    if (topOnFloor_) {
+      top.v.x *= 0.1f;
+      top.v.z *= 0.1f;
+      top.v.y *= 0.01f;
+      top.w   *= 0.1f;
+      if (std::fabs(top.v.y) < 0.2f/*0.05f*/) top.v.y = 0.0f;
+      if (glm::length(top.w) < 0.2f) top.w = glm::vec3(0.0f);
+    }
+  }
 
   rebuildContacts();
 }
