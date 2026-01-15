@@ -119,6 +119,7 @@ void ContactGraphScene::usage() const {
   std::printf("  [ / ] : adjust drive amplitude\n");
   std::printf("  ; / ' : adjust drive frequency\n");
   std::printf("  F : toggle falling when unsupported\n");
+  std::printf("  M : cycle fall rotation mode (A: kick, B: torque)\n");
   std::printf("  ESC : quit\n");
   std::printf("  - Yellow points: dynamic (sliding) contacts (vt > eps).\n");
   std::printf("  - A small horizontal drive moves the top body to make dyn contacts visible.");
@@ -292,8 +293,16 @@ void ContactGraphScene::simulateStep(float dt) {
       // Transition to dynamic free-fall (continue below in the same step).
       topFreeFall_ = true;
       top.v.y = 0.0f;
-      top.w = glm::vec3(0.0f);
-      top.q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+      if (fallRotMode_ == 1) {
+        // Mode A: give a small tilt + initial angular velocity to break symmetry.
+        const float tilt = glm::radians(fallKickDeg_);
+        top.q = glm::angleAxis(tilt, glm::vec3(0.0f, 0.0f, 1.0f));
+        top.w = glm::vec3(0.0f, 0.0f, fallKickOmega_);
+      } else {
+        top.q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        top.w = glm::vec3(0.0f);
+      }
     } else {
       rebuildContacts();
       return;
@@ -303,6 +312,16 @@ void ContactGraphScene::simulateStep(float dt) {
   // --- Dynamic mode (top free-falls with collisions)
   const glm::vec3 xPrev = top.x;
   const glm::quat qPrev = top.q;
+
+  if (fallRotMode_ == 2 && driveEnabled_) {
+    // Mode B: inject a weak off-center torque during free-fall to induce rotation.
+    const glm::vec3 rLocal(0.0f, top.halfExtents.y, top.halfExtents.z);
+    const glm::vec3 r = glm::rotate(top.q, rLocal);
+    const glm::mat3 IinvW = invInertiaWorld(top);
+    const glm::vec3 J = glm::vec3(vxCmd, 0.0f, 0.0f);
+    const glm::vec3 tau = glm::cross(r, J);
+    top.w += (fallTorqueGain_ * dt) * (IinvW * tau);
+  }
 
   // Integrate (semi-implicit Euler).
   top.v += gravity_ * dt;
@@ -467,6 +486,10 @@ void ContactGraphScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
   }
   if (key == 'f' || key == 'F') {
     driveAllowFall_ = !driveAllowFall_;
+    return;
+  }
+  if (key == 'm' || key == 'M') {
+    fallRotMode_ = (fallRotMode_ + 1) % 3;
     return;
   }
   if (key == '[') {
@@ -777,11 +800,29 @@ void ContactGraphScene::onFrameEnd() {
     if (c.supporting) ++supp;
   }
 
+  const char* rot = "none";
+
+
+  if (fallRotMode_ == 1) rot = "A";
+
+
+  else if (fallRotMode_ == 2) rot = "B";
+
+
+
   char extra[240];
+
+
   std::snprintf(
+
+
     extra,
+
+
     sizeof(extra),
-    "contacts=%d static=%d dyn=%d supporting=%d | drive=%s A=%.2f f=%.2f fall=%s",
+
+
+    "contacts=%d static=%d dyn=%d supporting=%d | drive=%s A=%.2f f=%.2f fall=%s rot=%s",
     (int)contacts_.size(),
     staticC,
     dynC,
@@ -789,7 +830,8 @@ void ContactGraphScene::onFrameEnd() {
     driveEnabled_ ? "ON" : "OFF",
     drivePosAmp_,
     driveHz_,
-    driveAllowFall_ ? "ON" : "OFF"
+    driveAllowFall_ ? "ON" : "OFF",
+    rot
   );
   updateWindowTitle(extra);
 }

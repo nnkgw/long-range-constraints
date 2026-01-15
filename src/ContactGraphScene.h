@@ -88,4 +88,14 @@ private:
   float driveHz_ = 0.7f;
 
   glm::vec3 driveBasePos_{0.0f};
+
+  // Fall rotation experiments:
+  //  0: none
+  //  1: A (kick)     - apply a small tilt + initial angular velocity when free-fall starts.
+  //  2: B (torque)   - inject a weak off-center drive torque during free-fall.
+  int fallRotMode_ = 1;
+  float fallKickDeg_ = 2.0f;
+  float fallKickOmega_ = 0.6f;
+  float fallTorqueGain_ = 2.5f;
+
 };
