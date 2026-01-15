@@ -18,6 +18,7 @@
 #endif
 
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 namespace {
 static float clampf(float x, float lo, float hi) {
@@ -25,13 +26,78 @@ static float clampf(float x, float lo, float hi) {
 }
 } // namespace
 
+static glm::vec3 worldFromLocal(const lrc::RigidBody& b, const glm::vec3& pLocal) {
+  // Transform a point from the body local frame to world frame.
+  return b.x + (b.q * pLocal);
+}
+
+static glm::vec3 aabbExtentsWorld(const lrc::RigidBody& b) {
+  // World-space AABB half extents of an OBB (b.x, b.q, b.halfExtents).
+  // ext = |R| * h
+  const glm::mat3 R = glm::toMat3(b.q);
+  const glm::vec3 h = b.halfExtents;
+  return glm::vec3(
+    std::abs(R[0][0]) * h.x + std::abs(R[1][0]) * h.y + std::abs(R[2][0]) * h.z,
+    std::abs(R[0][1]) * h.x + std::abs(R[1][1]) * h.y + std::abs(R[2][1]) * h.z,
+    std::abs(R[0][2]) * h.x + std::abs(R[1][2]) * h.y + std::abs(R[2][2]) * h.z
+  );
+}
+
 static glm::vec3 aabbMin(const lrc::RigidBody& b) {
-  return b.x - b.halfExtents;
+  return b.x - aabbExtentsWorld(b);
 }
 
 static glm::vec3 aabbMax(const lrc::RigidBody& b) {
-  return b.x + b.halfExtents;
+  return b.x + aabbExtentsWorld(b);
 }
+
+static void applySmallRotation(glm::quat& q, const glm::vec3& dthetaWorld) {
+  // Small-angle approximation: q <- normalize( q + 0.5 * [0, dtheta] * q )
+  glm::quat dq(0.0f, dthetaWorld.x, dthetaWorld.y, dthetaWorld.z);
+  q += 0.5f * dq * q;
+  q = glm::normalize(q);
+}
+
+static glm::mat3 invInertiaWorld(const lrc::RigidBody& b) {
+  const glm::mat3 R = glm::toMat3(b.q);
+  return R * b.invInertiaLocal * glm::transpose(R);
+}
+
+static void solvePointPenetration(lrc::RigidBody& b,
+                                  const glm::vec3& pWorld,
+                                  const glm::vec3& nWorld,
+                                  float penetration) {
+  // Unilateral point-plane / point-AABB-face style positional correction.
+  // Treat the other object as static (infinite mass).
+  if (penetration <= 0.0f) return;
+
+  const glm::vec3 r = pWorld - b.x;
+  const glm::vec3 rn = glm::cross(r, nWorld);
+  const glm::mat3 IinvW = invInertiaWorld(b);
+
+  const float denom = b.invMass + glm::dot(rn, IinvW * rn);
+  if (denom <= 0.0f) return;
+
+  const float lambda = penetration / denom;
+
+  b.x += b.invMass * lambda * nWorld;
+  const glm::vec3 dtheta = IinvW * (lambda * rn);
+  applySmallRotation(b.q, dtheta);
+}
+
+static void obbCornersWorld(const lrc::RigidBody& b, glm::vec3 corners[8]) {
+  const glm::vec3 h = b.halfExtents;
+  int idx = 0;
+  for (int sx = -1; sx <= 1; sx += 2) {
+    for (int sy = -1; sy <= 1; sy += 2) {
+      for (int sz = -1; sz <= 1; sz += 2) {
+        const glm::vec3 local((float)sx * h.x, (float)sy * h.y, (float)sz * h.z);
+        corners[idx++] = b.x + glm::rotate(b.q, local);
+      }
+    }
+  }
+}
+
 
 ContactGraphScene::ContactGraphScene() {
   titleName_ = "Long Range Constraints - Phase D0";
@@ -64,6 +130,7 @@ void ContactGraphScene::buildScene() {
   graphEdges_.clear();
 
   driveTime_ = 0.0f;
+  topFreeFall_ = false;
 
   // Build a small blocky stack (Figure 12-style) that stays in view and
   // generates a richer contact graph (several bodies have multiple supporting contacts).
@@ -138,457 +205,170 @@ void ContactGraphScene::reset() {
 }
 
 void ContactGraphScene::simulateStep(float dt) {
-  // This scene is primarily for contact graph construction/visualization, not for full rigid body simulation.
-  // We keep most bodies kinematic and only move the top body slightly to exercise static-vs-dynamic and
-  // "supporting" classification logic.
-  if (paused_) return;
+  // This scene is intentionally kept "simple":
+  // - The lower stack is kinematic (fixed pose).
+  // - The top box can be driven horizontally.
+  // - When "F: toggle falling when unsupported" is enabled, the top box can switch to
+  //   a dynamic rigid body and free-fall with collisions (including rotation).
 
+  if (paused_) return;
   if (dt <= 0.0f) return;
+
   driveTime_ += dt;
 
-  // Keep the stack kinematic (no rotations in this step).
+  // Keep the stack kinematic (except the top box when in free-fall mode).
   for (int i = 0; i < (int)bodies_.size(); ++i) {
-    bodies_[i].q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-    bodies_[i].w = glm::vec3(0.0f);
-    if (i != 2) bodies_[i].v = glm::vec3(0.0f);
+    if (i == 2) continue; // top box
+    lrc::RigidBody& b = bodies_[i];
+    b.v = glm::vec3(0.0f);
+    b.w = glm::vec3(0.0f);
+    b.q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
   }
 
-  if (bodies_.size() <= 2) {
-    rebuildContacts();
-    return;
-  }
-
-  // Move the top body (index 2) in X using a target-position drive.
   lrc::RigidBody& top = bodies_[2];
+
+  // Horizontal drive (weak PD velocity injection) – matches the pre-fall behavior.
+  float vxCmd = 0.0f;
+  if (driveEnabled_) {
+    float omega = 2.0f * 3.1415926535f * driveHz_;
+    float targetX = driveBasePos_.x + drivePosAmp_ * std::sin(omega * driveTime_);
+    float errorX = targetX - top.x.x;
+    vxCmd = clampf(driveKp_ * errorX, -driveVelAmp_, driveVelAmp_);
+  }
+  top.v.x = vxCmd;
   top.v.z = 0.0f;
 
-  if (driveEnabled_) {
-    const float twoPi = 6.283185307179586f;
-    float omega = twoPi * driveHz_;
-    float xTarget = driveBasePos_.x + drivePosAmp_ * std::sin(omega * driveTime_);
-
-    float err = xTarget - top.x.x;
-    float vx = driveKp_ * err;
-
-    // Clamp the speed to keep the motion slow and avoid tunneling.
-    vx = clampf(vx, -driveVelAmp_, driveVelAmp_);
-    top.v.x = vx;
-  } else {
-    top.v.x = 0.0f;
+  // If falling toggle is off, force the top back to kinematic mode.
+  if (!driveAllowFall_) {
+    topFreeFall_ = false;
   }
 
-  // Integrate horizontal motion first, then rebuild contacts to test support with the updated pose.
-  top.x.x += top.v.x * dt;
-  rebuildContacts();
-
-  // If the top block is no longer supported, let it fall under gravity (still a very simplified model).
-  //
-  // Note:
-  //   "supporting" in Sec. 3.6 is defined using *static* contacts only.
-  //   For the "F: toggle falling" debug feature, however, we want the top block to *not* fall
-  //   as long as it is geometrically supported, even if the contacts are classified as dynamic.
-  //   Otherwise, enabling the drive immediately makes the top block "unsupported" (because the
-  //   contacts become dynamic) and it falls every time.
-  float yRest = top.x.y;
-  std::vector<glm::vec2> supportPts;
-  supportPts.reserve(8);
-  for (const Contact& c : contacts_) {
-    if (c.upper != 2) continue;
-    if (c.n.y < 0.5f) continue;
-    supportPts.push_back(glm::vec2(c.p.x, c.p.z));
-    yRest = std::max(yRest, c.p.y + boxHalf_.y);
-  }
-
-  bool supportedForFall = false;
-  if (!supportPts.empty()) {
-    glm::vec2 comP(top.x.x, top.x.z);
-    if (supportPts.size() == 1) {
-      supportedForFall = (glm::length(supportPts[0] - comP) < 1e-4f);
-    } else if (supportPts.size() == 2) {
-      supportedForFall = pointOnSegment2D(supportPts[0], supportPts[1], comP);
-    } else {
-      std::vector<glm::vec2> hull = convexHull2D(supportPts);
-      if (hull.size() == 2) supportedForFall = pointOnSegment2D(hull[0], hull[1], comP);
-      else if (hull.size() >= 3) supportedForFall = pointInConvexPolygon2D(hull, comP);
-    }
-  }
-
-  if (supportedForFall) {
+  // --- Kinematic mode (top is supported / hasn't started free-fall yet)
+  if (!topFreeFall_) {
+    // Keep the top upright while it is part of the stack.
+    top.q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    top.w = glm::vec3(0.0f);
     top.v.y = 0.0f;
-    top.x.y = yRest;
-  } else if (driveAllowFall_) {
-    top.v.y += gravity_.y * dt;
-    top.x.y += top.v.y * dt;
 
-    float floorY = groundY_ + boxHalf_.y;
-    if (top.x.y < floorY) {
-      top.x.y = floorY;
+    // Apply horizontal motion kinematically.
+    top.x.x += top.v.x * dt;
+
+    // Rebuild contacts in this (driven) configuration so we can test support.
+    rebuildContacts();
+
+    if (driveAllowFall_) {
+      // Collect support contact points under the top.
+      std::vector<glm::vec2> supportXZ;
+      float minSupportY = 1e9f;
+
+      float topBottomY = top.x.y - boxHalf_.y;
+
+      for (const Contact& c : contacts_) {
+        if (c.upper != 2) continue;
+        if (c.lower == -1) continue; // ground doesn't directly support the top in this setup
+
+        // Only consider contacts close to the bottom face of the top.
+        if (std::fabs(c.p.y - topBottomY) > 0.05f) continue;
+
+        supportXZ.push_back(glm::vec2(c.p.x, c.p.z));
+        minSupportY = std::min(minSupportY, c.p.y);
+      }
+
+      bool supportedForFall = false;
+      if (supportXZ.size() >= 3) {
+        std::vector<glm::vec2> hull = convexHull2D(supportXZ);
+        supportedForFall = pointInConvexPolygon2D(hull, glm::vec2(top.x.x, top.x.z));
+      }
+
+      // If supported, keep the top resting on the supports; otherwise start free-fall.
+      if (supportedForFall) {
+        top.x.y = minSupportY + boxHalf_.y;
+        top.v.y = 0.0f;
+
+        rebuildContacts();
+        return;
+      }
+
+      // Transition to dynamic free-fall (continue below in the same step).
+      topFreeFall_ = true;
       top.v.y = 0.0f;
-    }
-  } else {
-    top.v.y = 0.0f;
-  }
-
-  // Rebuild after the vertical update so the graph matches what is rendered.
-  rebuildContacts();
-}
-
-
-void ContactGraphScene::rebuildContacts() {
-  contacts_.clear();
-
-  // Floor contacts.
-  for (int i = 0; i < (int)bodies_.size(); ++i) {
-    addBoxFloorContacts(i);
-  }
-
-  // Box-box contacts (AABB overlap). For this step, we assume identity orientation.
-  for (int i = 0; i < (int)bodies_.size(); ++i) {
-    for (int j = 0; j < (int)bodies_.size(); ++j) {
-      if (i == j) continue;
-
-      // Identify the upper and lower body by y.
-      const lrc::RigidBody& A = bodies_[i];
-      const lrc::RigidBody& B = bodies_[j];
-
-      if (A.x.y <= B.x.y) continue;
-
-      glm::vec3 aMin = aabbMin(A);
-      glm::vec3 aMax = aabbMax(A);
-      glm::vec3 bMin = aabbMin(B);
-      glm::vec3 bMax = aabbMax(B);
-
-      // Overlap in XZ.
-      float ox0 = std::max(aMin.x, bMin.x);
-      float ox1 = std::min(aMax.x, bMax.x);
-      float oz0 = std::max(aMin.z, bMin.z);
-      float oz1 = std::min(aMax.z, bMax.z);
-      if (ox0 >= ox1 || oz0 >= oz1) continue;
-
-      // Check vertical adjacency (top of lower near bottom of upper).
-      float upperBottom = aMin.y;
-      float lowerTop = bMax.y;
-      float gap = upperBottom - lowerTop;
-      if (std::fabs(gap) > 1e-4f) continue;
-
-      addBoxBoxContacts(i, j);
+      top.w = glm::vec3(0.0f);
+      top.q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    } else {
+      rebuildContacts();
+      return;
     }
   }
 
-  buildContactGraph();
-  computeSupportingContacts();
-}
+  // --- Dynamic mode (top free-falls with collisions)
+  const glm::vec3 xPrev = top.x;
+  const glm::quat qPrev = top.q;
 
-void ContactGraphScene::buildContactGraph() {
-  graphEdges_.clear();
-  if (contacts_.empty()) return;
+  // Integrate (semi-implicit Euler).
+  top.v += gravity_ * dt;
+  top.x += top.v * dt;
+  top.q = lrc::integrateOrientation(top.q, top.w, dt);
 
-  // For each body, connect all contact nodes that act on it.
-  for (int body = -1; body < (int)bodies_.size(); ++body) {
-    std::vector<int> idx;
-    for (int c = 0; c < (int)contacts_.size(); ++c) {
-      const Contact& ct = contacts_[c];
-      if (ct.upper == body || ct.lower == body) idx.push_back(c);
+  // Position-based collision resolution against:
+  // - ground plane y = groundY_
+  // - other (kinematic) axis-aligned boxes
+  constexpr int kIters = 8;
+  constexpr float kSlop = 1e-4f;
+
+  for (int it = 0; it < kIters; ++it) {
+    glm::vec3 corners[8];
+    obbCornersWorld(top, corners);
+
+    // Ground
+    for (int c = 0; c < 8; ++c) {
+      float pen = groundY_ - corners[c].y;
+      if (pen > 0.0f) {
+        solvePointPenetration(top, corners[c], glm::vec3(0.0f, 1.0f, 0.0f), pen + kSlop);
+      }
     }
-    for (int i = 0; i < (int)idx.size(); ++i) {
-      for (int j = i + 1; j < (int)idx.size(); ++j) {
-        graphEdges_.push_back(std::make_pair(idx[i], idx[j]));
+
+    // Other boxes (treated as static AABBs)
+    for (int bi = 0; bi < (int)bodies_.size(); ++bi) {
+      if (bi == 2) continue;
+      const lrc::RigidBody& s = bodies_[bi];
+      const glm::vec3 bmin = s.x - s.halfExtents;
+      const glm::vec3 bmax = s.x + s.halfExtents;
+
+      for (int c = 0; c < 8; ++c) {
+        const glm::vec3 p = corners[c];
+        if (p.x <= bmin.x || p.x >= bmax.x ||
+            p.y <= bmin.y || p.y >= bmax.y ||
+            p.z <= bmin.z || p.z >= bmax.z) {
+          continue;
+        }
+
+        // Point is inside the AABB -> push it out along the closest face normal.
+        float dx0 = p.x - bmin.x;
+        float dx1 = bmax.x - p.x;
+        float dy0 = p.y - bmin.y;
+        float dy1 = bmax.y - p.y;
+        float dz0 = p.z - bmin.z;
+        float dz1 = bmax.z - p.z;
+
+        float best = dx0;
+        glm::vec3 n(-1.0f, 0.0f, 0.0f);
+
+        if (dx1 < best) { best = dx1; n = glm::vec3( 1.0f, 0.0f, 0.0f); }
+        if (dy0 < best) { best = dy0; n = glm::vec3( 0.0f,-1.0f, 0.0f); }
+        if (dy1 < best) { best = dy1; n = glm::vec3( 0.0f, 1.0f, 0.0f); }
+        if (dz0 < best) { best = dz0; n = glm::vec3( 0.0f, 0.0f,-1.0f); }
+        if (dz1 < best) { best = dz1; n = glm::vec3( 0.0f, 0.0f, 1.0f); }
+
+        solvePointPenetration(top, p, n, best + kSlop);
       }
     }
   }
-}
 
-void ContactGraphScene::computeSupportingContacts() {
-  // Reset flags.
-  bodySupported_.assign(bodies_.size(), false);
-  for (Contact& c : contacts_) c.supporting = false;
+  // Update velocities from the corrected pose.
+  top.v = (top.x - xPrev) / dt;
+  top.w = lrc::quatToOmegaWorld(qPrev, top.q, dt);
 
-  if (contacts_.empty()) return;
-
-  // Build adjacency from the contact graph edges.
-  std::vector<std::vector<int>> adj(contacts_.size());
-  adj.reserve(contacts_.size());
-  for (const std::pair<int, int>& e : graphEdges_) {
-    if (e.first < 0 || e.second < 0) continue;
-    if (e.first >= (int)contacts_.size() || e.second >= (int)contacts_.size()) continue;
-    adj[e.first].push_back(e.second);
-    adj[e.second].push_back(e.first);
-  }
-
-  // Process contacts bottom-to-top (along +Y in this prototype) as described in Sec. 3.6.
-  std::vector<int> order(contacts_.size());
-  for (int i = 0; i < (int)order.size(); ++i) order[i] = i;
-  std::sort(order.begin(), order.end(), [&](int a, int b) {
-    return contacts_[a].p.y < contacts_[b].p.y;
-  });
-
-  std::vector<bool> processed(contacts_.size(), false);
-
-  // First pass: classify supporting contacts using adjacency to already-classified supporting contacts.
-  for (int k = 0; k < (int)order.size(); ++k) {
-    int ci = order[k];
-    Contact& c = contacts_[ci];
-
-    // Dynamic contacts cannot be supporting in Sec. 3.6.
-    if (!c.isStatic) {
-      processed[ci] = true;
-      continue;
-    }
-
-    // Contacts to the ground are supporting seeds.
-    if (c.lower == -1) {
-      c.supporting = true;
-      processed[ci] = true;
-      continue;
-    }
-
-    // Gather adjacent supporting contacts already processed (i.e., below in the bottom-to-top order).
-    std::vector<glm::vec2> pts;
-    pts.reserve(adj[ci].size());
-    for (int aj : adj[ci]) {
-      if (aj < 0 || aj >= (int)contacts_.size()) continue;
-      if (!processed[aj]) continue;
-      const Contact& s = contacts_[aj];
-      if (!s.supporting) continue;
-      if (!s.isStatic) continue;
-      pts.push_back(glm::vec2(s.p.x, s.p.z));
-    }
-
-    glm::vec2 p2(c.p.x, c.p.z);
-
-    bool supported = false;
-    if (pts.size() == 1) {
-      supported = (glm::length(pts[0] - p2) < 1e-4f);
-    } else if (pts.size() == 2) {
-      supported = pointOnSegment2D(pts[0], pts[1], p2);
-    } else if (pts.size() >= 3) {
-      std::vector<glm::vec2> hull = convexHull2D(pts);
-      if (hull.size() == 2) supported = pointOnSegment2D(hull[0], hull[1], p2);
-      else if (hull.size() >= 3) supported = pointInConvexPolygon2D(hull, p2);
-    }
-
-    if (supported) c.supporting = true;
-    processed[ci] = true;
-  }
-
-  // Second pass: classify supported bodies using the hull of adjacent supporting contacts below the body.
-  for (int bi = 0; bi < (int)bodies_.size(); ++bi) {
-    const lrc::RigidBody& b = bodies_[bi];
-    glm::vec2 comP(b.x.x, b.x.z);
-
-    std::vector<glm::vec2> pts;
-    for (int ci = 0; ci < (int)contacts_.size(); ++ci) {
-      const Contact& c = contacts_[ci];
-      if (!c.supporting) continue;
-      if (!c.isStatic) continue;
-      if (c.upper != bi && c.lower != bi) continue;
-
-      // Only consider supporting contacts geometrically below the COM.
-      if (c.p.y > b.x.y + 1e-4f) continue;
-
-      pts.push_back(glm::vec2(c.p.x, c.p.z));
-    }
-
-    if (pts.empty()) continue;
-
-    bool supported = false;
-    if (pts.size() == 1) {
-      supported = (glm::length(pts[0] - comP) < 1e-4f);
-    } else if (pts.size() == 2) {
-      supported = pointOnSegment2D(pts[0], pts[1], comP);
-    } else {
-      std::vector<glm::vec2> hull = convexHull2D(pts);
-      if (hull.size() == 2) supported = pointOnSegment2D(hull[0], hull[1], comP);
-      else if (hull.size() >= 3) supported = pointInConvexPolygon2D(hull, comP);
-    }
-
-    bodySupported_[bi] = supported;
-  }
-}
-
-void ContactGraphScene::addBoxFloorContacts(int bodyIdx) {
-  const lrc::RigidBody& b = bodies_[bodyIdx];
-  glm::vec3 bMin = aabbMin(b);
-  if (std::fabs(bMin.y - groundY_) > 1e-4f) return;
-
-  float hx = b.halfExtents.x;
-  float hz = b.halfExtents.z;
-
-  glm::vec3 corners[4] = {
-    glm::vec3(b.x.x - hx, groundY_, b.x.z - hz),
-    glm::vec3(b.x.x + hx, groundY_, b.x.z - hz),
-    glm::vec3(b.x.x + hx, groundY_, b.x.z + hz),
-    glm::vec3(b.x.x - hx, groundY_, b.x.z + hz)
-  };
-
-  for (int i = 0; i < 4; ++i) {
-    Contact c;
-    c.upper = bodyIdx;
-    c.lower = -1;
-    c.p = corners[i];
-    c.n = glm::vec3(0.0f, 1.0f, 0.0f);
-    c.isStatic = isStaticContact(c.upper, c.lower, c.p, c.n);
-    contacts_.push_back(c);
-  }
-}
-
-bool ContactGraphScene::isStaticContact(int upperIdx, int lowerIdx, const glm::vec3& p, const glm::vec3& n) const {
-  // Step 1: a very small "static vs dynamic" contact classification.
-  // We classify a contact as "static" when the relative tangential velocity at the contact is small.
-  // This is intentionally simple and primarily meant to support later steps (friction cone / impulses).
-  const float kStaticVelEps = 0.02f;
-
-  if (upperIdx < 0 || upperIdx >= (int)bodies_.size()) return true;
-
-  const lrc::RigidBody& A = bodies_[upperIdx];
-  glm::vec3 ra = p - A.x;
-  glm::vec3 va = A.v + glm::cross(A.w, ra);
-
-  glm::vec3 vb(0.0f);
-  if (lowerIdx >= 0 && lowerIdx < (int)bodies_.size()) {
-    const lrc::RigidBody& B = bodies_[lowerIdx];
-    glm::vec3 rb = p - B.x;
-    vb = B.v + glm::cross(B.w, rb);
-  }
-
-  glm::vec3 vrel = va - vb;
-  glm::vec3 vt = vrel - glm::dot(vrel, n) * n;
-  return glm::length(vt) < kStaticVelEps;
-}
-
-void ContactGraphScene::addBoxBoxContacts(int upperIdx, int lowerIdx) {
-  const lrc::RigidBody& A = bodies_[upperIdx];
-  const lrc::RigidBody& B = bodies_[lowerIdx];
-
-  glm::vec3 aMin = aabbMin(A);
-  glm::vec3 aMax = aabbMax(A);
-  glm::vec3 bMin = aabbMin(B);
-  glm::vec3 bMax = aabbMax(B);
-
-  float ox0 = std::max(aMin.x, bMin.x);
-  float ox1 = std::min(aMax.x, bMax.x);
-  float oz0 = std::max(aMin.z, bMin.z);
-  float oz1 = std::min(aMax.z, bMax.z);
-
-  if (ox0 >= ox1 || oz0 >= oz1) return;
-
-  float y = bMax.y;
-
-  glm::vec3 corners[4] = {
-    glm::vec3(ox0, y, oz0),
-    glm::vec3(ox1, y, oz0),
-    glm::vec3(ox1, y, oz1),
-    glm::vec3(ox0, y, oz1)
-  };
-
-  for (int i = 0; i < 4; ++i) {
-    Contact c;
-    c.upper = upperIdx;
-    c.lower = lowerIdx;
-    c.p = corners[i];
-    c.n = glm::vec3(0.0f, 1.0f, 0.0f);
-    c.isStatic = isStaticContact(c.upper, c.lower, c.p, c.n);
-    contacts_.push_back(c);
-  }
-}
-
-float ContactGraphScene::cross2(const glm::vec2& a, const glm::vec2& b) {
-  return a.x * b.y - a.y * b.x;
-}
-
-float ContactGraphScene::cross2(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c) {
-  return cross2(b - a, c - a);
-}
-
-std::vector<glm::vec2> ContactGraphScene::convexHull2D(std::vector<glm::vec2> pts) {
-  if (pts.size() <= 2) return pts;
-  std::sort(pts.begin(), pts.end(), [](const glm::vec2& a, const glm::vec2& b) {
-    if (a.x != b.x) return a.x < b.x;
-    return a.y < b.y;
-  });
-  pts.erase(std::unique(pts.begin(), pts.end(), [](const glm::vec2& a, const glm::vec2& b) {
-    return glm::length(a - b) < 1e-6f;
-  }), pts.end());
-
-  if (pts.size() <= 2) return pts;
-
-  std::vector<glm::vec2> lower;
-  for (const glm::vec2& p : pts) {
-    while (lower.size() >= 2 && cross2(lower[lower.size() - 2], lower[lower.size() - 1], p) <= 0.0f) {
-      lower.pop_back();
-    }
-    lower.push_back(p);
-  }
-
-  std::vector<glm::vec2> upper;
-  for (int i = (int)pts.size() - 1; i >= 0; --i) {
-    const glm::vec2& p = pts[i];
-    while (upper.size() >= 2 && cross2(upper[upper.size() - 2], upper[upper.size() - 1], p) <= 0.0f) {
-      upper.pop_back();
-    }
-    upper.push_back(p);
-  }
-
-  lower.pop_back();
-  upper.pop_back();
-
-  std::vector<glm::vec2> hull = lower;
-  hull.insert(hull.end(), upper.begin(), upper.end());
-
-  return hull;
-}
-
-bool ContactGraphScene::pointOnSegment2D(const glm::vec2& a, const glm::vec2& b, const glm::vec2& p) {
-  glm::vec2 ab = b - a;
-  glm::vec2 ap = p - a;
-  float t = glm::dot(ap, ab) / std::max(1e-12f, glm::dot(ab, ab));
-  if (t < 0.0f) t = 0.0f;
-  if (t > 1.0f) t = 1.0f;
-  glm::vec2 q = a + t * ab;
-  return glm::length(q - p) < 1e-4f;
-}
-
-bool ContactGraphScene::pointInConvexPolygon2D(const std::vector<glm::vec2>& poly, const glm::vec2& p) {
-  if (poly.size() < 3) return false;
-  // Assumes CCW hull without self-intersections.
-  bool hasPos = false;
-  bool hasNeg = false;
-  for (int i = 0; i < (int)poly.size(); ++i) {
-    const glm::vec2& a = poly[i];
-    const glm::vec2& b = poly[(i + 1) % poly.size()];
-    float c = cross2(a, b, p);
-    if (c > 1e-6f) hasPos = true;
-    if (c < -1e-6f) hasNeg = true;
-    if (hasPos && hasNeg) return false;
-  }
-  return true;
-}
-
-void ContactGraphScene::onFrameEnd() {
-  // Keep the title stable with a short summary.
-  int staticC = 0;
-  int dynC = 0;
-  int supp = 0;
-  for (const Contact& c : contacts_) {
-    if (c.isStatic) ++staticC;
-    else ++dynC;
-    if (c.supporting) ++supp;
-  }
-  char extra[240];
-  std::snprintf(
-    extra,
-    sizeof(extra),
-    "contacts=%d static=%d dyn=%d supporting=%d | drive=%s A=%.2f f=%.2f fall=%s",
-    (int)contacts_.size(),
-    staticC,
-    dynC,
-    supp,
-    driveEnabled_ ? "ON" : "OFF",
-    drivePosAmp_,
-    driveHz_,
-    driveAllowFall_ ? "ON" : "OFF"
-  );
-  updateWindowTitle(extra);
+  rebuildContacts();
 }
 
 void ContactGraphScene::drawSceneContents() {
@@ -603,6 +383,8 @@ void ContactGraphScene::drawSceneContents() {
     const lrc::RigidBody& b = bodies_[i];
     glPushMatrix();
     glTranslatef(b.x.x, b.x.y, b.x.z);
+    const glm::mat4 R = glm::toMat4(b.q);
+    glMultMatrixf(glm::value_ptr(R));
     if (i >= 0 && i < (int)bodySupported_.size() && bodySupported_[i]) {
       glColor3f(0.9f, 0.6f, 0.2f); // supported bodies in orange.
     } else {
@@ -703,4 +485,311 @@ void ContactGraphScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
     driveHz_ += 0.05f;
     return;
   }
+}
+
+void ContactGraphScene::rebuildContacts() {
+  contacts_.clear();
+  graphEdges_.clear();
+  bodySupported_.assign(bodies_.size(), false);
+
+  // Floor contacts.
+  for (int i = 0; i < (int)bodies_.size(); ++i) {
+    addBoxFloorContacts(i);
+  }
+
+  // Box-box contacts (broad phase via world AABB).
+  for (int i = 0; i < (int)bodies_.size(); ++i) {
+    for (int j = i + 1; j < (int)bodies_.size(); ++j) {
+      const glm::vec3 aMin = aabbMin(bodies_[i]);
+      const glm::vec3 aMax = aabbMax(bodies_[i]);
+      const glm::vec3 bMin = aabbMin(bodies_[j]);
+      const glm::vec3 bMax = aabbMax(bodies_[j]);
+
+      const bool overlapX = (aMin.x <= bMax.x) && (aMax.x >= bMin.x);
+      const bool overlapY = (aMin.y <= bMax.y) && (aMax.y >= bMin.y);
+      const bool overlapZ = (aMin.z <= bMax.z) && (aMax.z >= bMin.z);
+      if (!overlapX || !overlapY || !overlapZ) continue;
+
+      // Determine a plausible "upper" / "lower" ordering by center height.
+      const bool iAbove = bodies_[i].x.y >= bodies_[j].x.y;
+      const int upper = iAbove ? i : j;
+      const int lower = iAbove ? j : i;
+      addBoxBoxContacts(upper, lower);
+    }
+  }
+
+  buildContactGraph();
+  computeSupportingContacts();
+}
+
+void ContactGraphScene::buildContactGraph() {
+  graphEdges_.clear();
+  const int n = (int)contacts_.size();
+  if (n <= 1) return;
+
+  // Create undirected edges between contact nodes that share a body.
+  for (int i = 0; i < n; ++i) {
+    for (int j = i + 1; j < n; ++j) {
+      const Contact& a = contacts_[i];
+      const Contact& b = contacts_[j];
+      const bool shareUpper = (a.upper == b.upper) && (a.upper >= 0);
+      const bool shareLower = (a.lower == b.lower) && (a.lower >= 0);
+      const bool share = shareUpper || shareLower;
+      if (!share) continue;
+      graphEdges_.push_back(std::make_pair(i, j));
+    }
+  }
+}
+
+void ContactGraphScene::computeSupportingContacts() {
+  for (Contact& c : contacts_) c.supporting = false;
+  bodySupported_.assign(bodies_.size(), false);
+
+  // For each body, check whether its COM projection is inside the convex hull
+  // of "static" contact points supporting it from below (incl. floor).
+  for (int bi = 0; bi < (int)bodies_.size(); ++bi) {
+    std::vector<int> cand;
+    cand.reserve(16);
+
+    for (int ci = 0; ci < (int)contacts_.size(); ++ci) {
+      const Contact& c = contacts_[ci];
+      if (c.upper != bi) continue;
+      if (!c.isStatic) continue;
+      // Accept floor (lower == -1) and any lower body.
+      cand.push_back(ci);
+    }
+
+    if ((int)cand.size() < 3) continue;
+
+    std::vector<glm::vec2> pts;
+    pts.reserve(cand.size());
+    for (int idx : cand) {
+      const glm::vec3& p = contacts_[idx].p;
+      pts.push_back(glm::vec2(p.x, p.z));
+    }
+
+    const std::vector<glm::vec2> hull = convexHull2D(std::move(pts));
+    if (hull.size() < 3) continue;
+
+    const glm::vec2 c2(bodies_[bi].x.x, bodies_[bi].x.z);
+    if (!pointInConvexPolygon2D(hull, c2)) continue;
+
+    bodySupported_[bi] = true;
+
+    // Mark supporting contacts for visualization.
+    for (int idx : cand) {
+      contacts_[idx].supporting = true;
+    }
+  }
+}
+
+void ContactGraphScene::addBoxFloorContacts(int bodyIdx) {
+  const lrc::RigidBody& b = bodies_[bodyIdx];
+  const glm::vec3 aMin = aabbMin(b);
+  if (aMin.y > groundY_ + 1e-3f) return;
+
+  // Use the four bottom corners in the box local frame, transformed to world.
+  const float hx = b.halfExtents.x;
+  const float hy = b.halfExtents.y;
+  const float hz = b.halfExtents.z;
+
+  const glm::vec3 localCorners[4] = {
+    glm::vec3(-hx, -hy, -hz),
+    glm::vec3(+hx, -hy, -hz),
+    glm::vec3(+hx, -hy, +hz),
+    glm::vec3(-hx, -hy, +hz)
+  };
+
+  for (int i = 0; i < 4; ++i) {
+    const glm::vec3 pw = worldFromLocal(b, localCorners[i]);
+    if (pw.y > groundY_ + 0.01f) continue;
+
+    Contact c;
+    c.upper = bodyIdx;
+    c.lower = -1;
+    c.p = glm::vec3(pw.x, groundY_, pw.z);
+    c.n = glm::vec3(0.0f, 1.0f, 0.0f);
+    c.isStatic = isStaticContact(bodyIdx, -1, c.p, c.n);
+    c.supporting = false;
+    contacts_.push_back(c);
+  }
+}
+
+void ContactGraphScene::addBoxBoxContacts(int upperIdx, int lowerIdx) {
+  if (upperIdx < 0 || lowerIdx < 0) return;
+  const lrc::RigidBody& upper = bodies_[upperIdx];
+  const lrc::RigidBody& lower = bodies_[lowerIdx];
+
+  const glm::vec3 uMin = aabbMin(upper);
+  const glm::vec3 uMax = aabbMax(upper);
+  const glm::vec3 lMin = aabbMin(lower);
+  const glm::vec3 lMax = aabbMax(lower);
+
+  const bool overlapX = (uMin.x <= lMax.x) && (uMax.x >= lMin.x);
+  const bool overlapZ = (uMin.z <= lMax.z) && (uMax.z >= lMin.z);
+  if (!overlapX || !overlapZ) return;
+
+  // Contact plane at the lower AABB top (works well for axis-aligned stacks).
+  const float yPlane = lMax.y;
+  const float gap = uMin.y - yPlane;
+  if (gap > 0.02f) return;
+
+  const float x0 = std::max(uMin.x, lMin.x);
+  const float x1 = std::min(uMax.x, lMax.x);
+  const float z0 = std::max(uMin.z, lMin.z);
+  const float z1 = std::min(uMax.z, lMax.z);
+  if (x1 - x0 < 1e-5f || z1 - z0 < 1e-5f) return;
+
+  const glm::vec3 corners[4] = {
+    glm::vec3(x0, yPlane, z0),
+    glm::vec3(x1, yPlane, z0),
+    glm::vec3(x1, yPlane, z1),
+    glm::vec3(x0, yPlane, z1)
+  };
+
+  for (int i = 0; i < 4; ++i) {
+    Contact c;
+    c.upper = upperIdx;
+    c.lower = lowerIdx;
+    c.p = corners[i];
+    c.n = glm::vec3(0.0f, 1.0f, 0.0f);
+    c.isStatic = isStaticContact(upperIdx, lowerIdx, c.p, c.n);
+    c.supporting = false;
+    contacts_.push_back(c);
+  }
+}
+
+bool ContactGraphScene::isStaticContact(int upperIdx, int lowerIdx, const glm::vec3& p, const glm::vec3& n) const {
+  const lrc::RigidBody& a = bodies_[upperIdx];
+  const glm::vec3 va = a.v + glm::cross(a.w, p - a.x);
+
+  glm::vec3 vb(0.0f);
+  if (lowerIdx >= 0) {
+    const lrc::RigidBody& b = bodies_[lowerIdx];
+    vb = b.v + glm::cross(b.w, p - b.x);
+  }
+
+  const glm::vec3 rel = va - vb;
+  const float speed = glm::length(rel);
+  // Keep consistent with the earlier "static" split for contact graphs.
+  (void)n;
+  return speed < 0.05f;
+}
+
+float ContactGraphScene::cross2(const glm::vec2& a, const glm::vec2& b) {
+  return a.x * b.y - a.y * b.x;
+}
+
+float ContactGraphScene::cross2(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c) {
+  return cross2(b - a, c - a);
+}
+
+bool ContactGraphScene::pointOnSegment2D(
+  const glm::vec2& a,
+  const glm::vec2& b,
+  const glm::vec2& p
+) {
+  const float eps = 1e-5f;
+  const glm::vec2 ab = b - a;
+  const glm::vec2 ap = p - a;
+  const float area = std::abs(cross2(ab, ap));
+  if (area > eps) return false;
+  const float d = glm::dot(ap, ab);
+  if (d < -eps) return false;
+  if (d > glm::dot(ab, ab) + eps) return false;
+  return true;
+}
+
+std::vector<glm::vec2> ContactGraphScene::convexHull2D(std::vector<glm::vec2> pts) {
+  if (pts.size() <= 1) return pts;
+
+  std::sort(pts.begin(), pts.end(), [](const glm::vec2& a, const glm::vec2& b) {
+    if (a.x != b.x) return a.x < b.x;
+    return a.y < b.y;
+  });
+
+  std::vector<glm::vec2> hull;
+  hull.reserve(pts.size() * 2);
+
+  // Lower hull.
+  for (const glm::vec2& p : pts) {
+    while (hull.size() >= 2) {
+      const glm::vec2& a = hull[hull.size() - 2];
+      const glm::vec2& b = hull[hull.size() - 1];
+      if (cross2(a, b, p) <= 0.0f) hull.pop_back();
+      else break;
+    }
+    hull.push_back(p);
+  }
+
+  // Upper hull.
+  const size_t lowerSize = hull.size();
+  for (int i = (int)pts.size() - 2; i >= 0; --i) {
+    const glm::vec2& p = pts[(size_t)i];
+    while (hull.size() > lowerSize) {
+      const glm::vec2& a = hull[hull.size() - 2];
+      const glm::vec2& b = hull[hull.size() - 1];
+      if (cross2(a, b, p) <= 0.0f) hull.pop_back();
+      else break;
+    }
+    hull.push_back(p);
+  }
+
+  if (!hull.empty()) hull.pop_back();
+  return hull;
+}
+
+bool ContactGraphScene::pointInConvexPolygon2D(
+  const std::vector<glm::vec2>& poly,
+  const glm::vec2& p
+) {
+  const int n = (int)poly.size();
+  if (n < 3) return false;
+
+  // Allow boundary as inside.
+  for (int i = 0; i < n; ++i) {
+    const glm::vec2 a = poly[i];
+    const glm::vec2 b = poly[(i + 1) % n];
+    if (pointOnSegment2D(a, b, p)) return true;
+  }
+
+  // Check that p is on the same side of all edges.
+  float sign = 0.0f;
+  for (int i = 0; i < n; ++i) {
+    const glm::vec2 a = poly[i];
+    const glm::vec2 b = poly[(i + 1) % n];
+    const float c = cross2(a, b, p);
+    if (std::abs(c) < 1e-6f) continue;
+    if (sign == 0.0f) sign = c;
+    else if ((sign > 0.0f) != (c > 0.0f)) return false;
+  }
+  return true;
+}
+
+void ContactGraphScene::onFrameEnd() {
+  // Keep the title stable with a short summary.
+  int staticC = 0;
+  int dynC = 0;
+  int supp = 0;
+  for (const Contact& c : contacts_) {
+    if (c.isStatic) ++staticC;
+    else ++dynC;
+    if (c.supporting) ++supp;
+  }
+
+  char extra[240];
+  std::snprintf(
+    extra,
+    sizeof(extra),
+    "contacts=%d static=%d dyn=%d supporting=%d | drive=%s A=%.2f f=%.2f fall=%s",
+    (int)contacts_.size(),
+    staticC,
+    dynC,
+    supp,
+    driveEnabled_ ? "ON" : "OFF",
+    drivePosAmp_,
+    driveHz_,
+    driveAllowFall_ ? "ON" : "OFF"
+  );
+  updateWindowTitle(extra);
 }

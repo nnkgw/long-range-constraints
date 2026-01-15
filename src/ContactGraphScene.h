@@ -77,6 +77,7 @@ private:
   bool driveEnabled_ = true;
   bool driveAllowFall_ = true;
   float driveTime_ = 0.0f;
+  bool topFreeFall_ = false;
 
   // Target position drive: x_target = base_x + A * sin(2*pi*f*t).
   float drivePosAmp_ = 0.22f; // m
