@@ -182,16 +182,38 @@ void ContactGraphScene::simulateStep(float dt) {
   rebuildContacts();
 
   // If the top block is no longer supported, let it fall under gravity (still a very simplified model).
+  //
+  // Note:
+  //   "supporting" in Sec. 3.6 is defined using *static* contacts only.
+  //   For the "F: toggle falling" debug feature, however, we want the top block to *not* fall
+  //   as long as it is geometrically supported, even if the contacts are classified as dynamic.
+  //   Otherwise, enabling the drive immediately makes the top block "unsupported" (because the
+  //   contacts become dynamic) and it falls every time.
   float yRest = top.x.y;
-  bool hasSupporting = false;
+  std::vector<glm::vec2> supportPts;
+  supportPts.reserve(8);
   for (const Contact& c : contacts_) {
     if (c.upper != 2) continue;
-    if (!c.supporting) continue;
-    hasSupporting = true;
+    if (c.n.y < 0.5f) continue;
+    supportPts.push_back(glm::vec2(c.p.x, c.p.z));
     yRest = std::max(yRest, c.p.y + boxHalf_.y);
   }
 
-  if (hasSupporting) {
+  bool supportedForFall = false;
+  if (!supportPts.empty()) {
+    glm::vec2 comP(top.x.x, top.x.z);
+    if (supportPts.size() == 1) {
+      supportedForFall = (glm::length(supportPts[0] - comP) < 1e-4f);
+    } else if (supportPts.size() == 2) {
+      supportedForFall = pointOnSegment2D(supportPts[0], supportPts[1], comP);
+    } else {
+      std::vector<glm::vec2> hull = convexHull2D(supportPts);
+      if (hull.size() == 2) supportedForFall = pointOnSegment2D(hull[0], hull[1], comP);
+      else if (hull.size() >= 3) supportedForFall = pointInConvexPolygon2D(hull, comP);
+    }
+  }
+
+  if (supportedForFall) {
     top.v.y = 0.0f;
     top.x.y = yRest;
   } else if (driveAllowFall_) {
