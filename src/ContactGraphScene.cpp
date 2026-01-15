@@ -19,6 +19,12 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+namespace {
+static float clampf(float x, float lo, float hi) {
+  return std::max(lo, std::min(hi, x));
+}
+} // namespace
+
 static glm::vec3 aabbMin(const lrc::RigidBody& b) {
   return b.x - b.halfExtents;
 }
@@ -43,9 +49,13 @@ void ContactGraphScene::usage() const {
   std::printf("  P : toggle contact points\n");
   std::printf("  SPACE : toggle pause\n");
   std::printf("  R : reset scene\n");
+  std::printf("  T : toggle top drive\n");
+  std::printf("  [ / ] : adjust drive amplitude\n");
+  std::printf("  ; / ' : adjust drive frequency\n");
+  std::printf("  F : toggle falling when unsupported\n");
   std::printf("  ESC : quit\n");
   std::printf("  - Yellow points: dynamic (sliding) contacts (vt > eps).\n");
-  std::printf("  - A small horizontal drive is applied to the top body to make dyn contacts visible.\n");
+  std::printf("  - A small horizontal drive moves the top body to make dyn contacts visible.");
 }
 
 void ContactGraphScene::buildScene() {
@@ -109,6 +119,12 @@ void ContactGraphScene::buildScene() {
     b.w = glm::vec3(0.0f);
   }
 
+  // Remember the initial top-body pose for the kinematic drive.
+  if (bodies_.size() > 2) {
+    driveBasePos_ = bodies_[2].x;
+    bodies_[2].v = glm::vec3(0.0f);
+  }
+
   camPan_ = glm::vec3(0.0f, 0.0f, 0.0f);
   lastTms_ = 0;
   acc_ = 0.0f;
@@ -122,29 +138,79 @@ void ContactGraphScene::reset() {
 }
 
 void ContactGraphScene::simulateStep(float dt) {
-  // Step 1: keep the geometry static, but apply a tiny horizontal drive to
-  // the top body so the simplified static-vs-dynamic classification produces
-  // visible "dyn" contacts.
+  // This scene is primarily for contact graph construction/visualization, not for full rigid body simulation.
+  // We keep most bodies kinematic and only move the top body slightly to exercise static-vs-dynamic and
+  // "supporting" classification logic.
   if (paused_) return;
 
+  if (dt <= 0.0f) return;
   driveTime_ += dt;
 
-  // Clear velocities (this scene is not a dynamics solver yet).
-  for (lrc::RigidBody& b : bodies_) {
-    b.v = glm::vec3(0.0f);
-    b.w = glm::vec3(0.0f);
+  // Keep the stack kinematic (no rotations in this step).
+  for (int i = 0; i < (int)bodies_.size(); ++i) {
+    bodies_[i].q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    bodies_[i].w = glm::vec3(0.0f);
+    if (i != 2) bodies_[i].v = glm::vec3(0.0f);
   }
 
-  // Apply a small periodic velocity to the top body.
-  if (driveEnabled_ && bodies_.size() >= 3) {
-    const float twoPi = 6.28318530718f;
+  if (bodies_.size() <= 2) {
+    rebuildContacts();
+    return;
+  }
+
+  // Move the top body (index 2) in X using a target-position drive.
+  lrc::RigidBody& top = bodies_[2];
+  top.v.z = 0.0f;
+
+  if (driveEnabled_) {
+    const float twoPi = 6.283185307179586f;
     float omega = twoPi * driveHz_;
-    float vx = driveVelAmp_ * std::cos(omega * driveTime_);
-    bodies_[2].v.x = vx;
+    float xTarget = driveBasePos_.x + drivePosAmp_ * std::sin(omega * driveTime_);
+
+    float err = xTarget - top.x.x;
+    float vx = driveKp_ * err;
+
+    // Clamp the speed to keep the motion slow and avoid tunneling.
+    vx = clampf(vx, -driveVelAmp_, driveVelAmp_);
+    top.v.x = vx;
+  } else {
+    top.v.x = 0.0f;
   }
 
+  // Integrate horizontal motion first, then rebuild contacts to test support with the updated pose.
+  top.x.x += top.v.x * dt;
+  rebuildContacts();
+
+  // If the top block is no longer supported, let it fall under gravity (still a very simplified model).
+  float yRest = top.x.y;
+  bool hasSupporting = false;
+  for (const Contact& c : contacts_) {
+    if (c.upper != 2) continue;
+    if (!c.supporting) continue;
+    hasSupporting = true;
+    yRest = std::max(yRest, c.p.y + boxHalf_.y);
+  }
+
+  if (hasSupporting) {
+    top.v.y = 0.0f;
+    top.x.y = yRest;
+  } else if (driveAllowFall_) {
+    top.v.y += gravity_.y * dt;
+    top.x.y += top.v.y * dt;
+
+    float floorY = groundY_ + boxHalf_.y;
+    if (top.x.y < floorY) {
+      top.x.y = floorY;
+      top.v.y = 0.0f;
+    }
+  } else {
+    top.v.y = 0.0f;
+  }
+
+  // Rebuild after the vertical update so the graph matches what is rendered.
   rebuildContacts();
 }
+
 
 void ContactGraphScene::rebuildContacts() {
   contacts_.clear();
@@ -486,15 +552,19 @@ void ContactGraphScene::onFrameEnd() {
     else ++dynC;
     if (c.supporting) ++supp;
   }
-  char extra[160];
+  char extra[240];
   std::snprintf(
     extra,
     sizeof(extra),
-    "contacts=%d static=%d dyn=%d supporting=%d",
+    "contacts=%d static=%d dyn=%d supporting=%d | drive=%s A=%.2f f=%.2f fall=%s",
     (int)contacts_.size(),
     staticC,
     dynC,
-    supp
+    supp,
+    driveEnabled_ ? "ON" : "OFF",
+    drivePosAmp_,
+    driveHz_,
+    driveAllowFall_ ? "ON" : "OFF"
   );
   updateWindowTitle(extra);
 }
@@ -584,6 +654,31 @@ void ContactGraphScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
   }
   if (key == 'p' || key == 'P') {
     showContacts_ = !showContacts_;
+    return;
+  }
+
+  if (key == 't' || key == 'T') {
+    driveEnabled_ = !driveEnabled_;
+    return;
+  }
+  if (key == 'f' || key == 'F') {
+    driveAllowFall_ = !driveAllowFall_;
+    return;
+  }
+  if (key == '[') {
+    drivePosAmp_ = std::max(0.0f, drivePosAmp_ - 0.02f);
+    return;
+  }
+  if (key == ']') {
+    drivePosAmp_ += 0.02f;
+    return;
+  }
+  if (key == ';') {
+    driveHz_ = std::max(0.05f, driveHz_ - 0.05f);
+    return;
+  }
+  if (key == '\'') {
+    driveHz_ += 0.05f;
     return;
   }
 }

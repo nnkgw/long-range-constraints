@@ -71,9 +71,20 @@ private:
   bool showContacts_ = true;
   bool showGraph_ = true;
 
-  // A tiny horizontal drive on the top body to intentionally create sliding (dynamic) contacts.
+  // A tiny horizontal drive on the top body. This was originally used only to create
+  // sliding (dynamic) contacts. In this step, the drive also moves the top body so the
+  // stack can lose support and the top block can fall (easier to validate the graph).
   bool driveEnabled_ = true;
+  bool driveAllowFall_ = true;
   float driveTime_ = 0.0f;
+
+  // Target position drive: x_target = base_x + A * sin(2*pi*f*t).
+  float drivePosAmp_ = 0.22f; // m
+  float driveKp_ = 10.0f;     // 1/s
+
+  // Velocity clamp (prevents teleporting and keeps the motion slow).
   float driveVelAmp_ = 0.10f; // m/s (small)
   float driveHz_ = 0.7f;
+
+  glm::vec3 driveBasePos_{0.0f};
 };
