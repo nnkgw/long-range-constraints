@@ -97,5 +97,10 @@ private:
   float fallKickDeg_ = 2.0f;
   float fallKickOmega_ = 0.6f;
   float fallTorqueGain_ = 2.5f;
+  // Cached support info used to pick a more physical fall rotation direction.
+  bool fallHasPivot_ = false;
+  int fallSupportLower_ = -2;
+  glm::vec3 fallPivot_{0.0f};
+  glm::vec3 fallAxis_{0.0f, 0.0f, 1.0f};
 
 };

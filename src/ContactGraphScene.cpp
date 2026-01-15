@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <utility>
+#include <limits>
 
 #include "DrawUtils.h"
 #include "GlutCompat.h"
@@ -23,6 +24,38 @@
 namespace {
 static float clampf(float x, float lo, float hi) {
   return std::max(lo, std::min(hi, x));
+}
+
+static glm::vec2 closestPointOnSegment2D(const glm::vec2& a, const glm::vec2& b, const glm::vec2& p) {
+  const glm::vec2 ab = b - a;
+  const float denom = glm::dot(ab, ab);
+  float t = 0.0f;
+  if (denom > 0.0f) {
+    t = glm::dot(p - a, ab) / denom;
+  }
+  t = clampf(t, 0.0f, 1.0f);
+  return a + t * ab;
+}
+
+static glm::vec2 closestPointOnPolyBoundary2D(const std::vector<glm::vec2>& poly, const glm::vec2& p) {
+  if (poly.empty()) return p;
+  if (poly.size() == 1) return poly[0];
+
+  glm::vec2 best = poly[0];
+  float bestD2 = std::numeric_limits<float>::infinity();
+  const int n = (int)poly.size();
+  for (int i = 0; i < n; ++i) {
+    const glm::vec2 a = poly[i];
+    const glm::vec2 b = poly[(i + 1) % n];
+    const glm::vec2 q = closestPointOnSegment2D(a, b, p);
+    const glm::vec2 d = q - p;
+    const float d2 = glm::dot(d, d);
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = q;
+    }
+  }
+  return best;
 }
 } // namespace
 
@@ -132,6 +165,10 @@ void ContactGraphScene::buildScene() {
 
   driveTime_ = 0.0f;
   topFreeFall_ = false;
+  fallHasPivot_ = false;
+  fallSupportLower_ = -2;
+  fallPivot_ = glm::vec3(0.0f);
+  fallAxis_ = glm::vec3(0.0f, 0.0f, 1.0f);
 
   // Build a small blocky stack (Figure 12-style) that stays in view and
   // generates a richer contact graph (several bodies have multiple supporting contacts).
@@ -242,6 +279,10 @@ void ContactGraphScene::simulateStep(float dt) {
   // If falling toggle is off, force the top back to kinematic mode.
   if (!driveAllowFall_) {
     topFreeFall_ = false;
+  fallHasPivot_ = false;
+  fallSupportLower_ = -2;
+  fallPivot_ = glm::vec3(0.0f);
+  fallAxis_ = glm::vec3(0.0f, 0.0f, 1.0f);
   }
 
   // --- Kinematic mode (top is supported / hasn't started free-fall yet)
@@ -260,6 +301,7 @@ void ContactGraphScene::simulateStep(float dt) {
     if (driveAllowFall_) {
       // Collect support contact points under the top.
       std::vector<glm::vec2> supportXZ;
+    std::vector<int> supportLower;
       float minSupportY = 1e9f;
 
       float topBottomY = top.x.y - boxHalf_.y;
@@ -272,6 +314,7 @@ void ContactGraphScene::simulateStep(float dt) {
         if (std::fabs(c.p.y - topBottomY) > 0.05f) continue;
 
         supportXZ.push_back(glm::vec2(c.p.x, c.p.z));
+        supportLower.push_back(c.lower);
         minSupportY = std::min(minSupportY, c.p.y);
       }
 
@@ -294,11 +337,58 @@ void ContactGraphScene::simulateStep(float dt) {
       topFreeFall_ = true;
       top.v.y = 0.0f;
 
+      // Cache the most relevant supporting surface to decide a fall rotation direction.
+      fallHasPivot_ = false;
+      fallSupportLower_ = -2;
+      fallPivot_ = glm::vec3(0.0f);
+      fallAxis_ = glm::vec3(0.0f, 0.0f, 1.0f);
+
+      if (minSupportY < 1e8f && !supportXZ.empty()) {
+        int bestLower = -1;
+        int bestCount = 0;
+        std::vector<int> counts((int)bodies_.size(), 0);
+        for (int li : supportLower) {
+          if (li >= 0 && li < (int)counts.size()) counts[li]++;
+        }
+        for (int i = 0; i < (int)counts.size(); ++i) {
+          if (counts[i] > bestCount) {
+            bestCount = counts[i];
+            bestLower = i;
+          }
+        }
+
+        std::vector<glm::vec2> pts = supportXZ;
+        if (bestLower >= 0 && bestCount > 0) {
+          pts.clear();
+          for (size_t i = 0; i < supportXZ.size(); ++i) {
+            if (supportLower[i] == bestLower) pts.push_back(supportXZ[i]);
+          }
+        }
+
+        std::vector<glm::vec2> hull = pts;
+        if (pts.size() >= 3) hull = convexHull2D(pts);
+
+        const glm::vec2 comXZ(top.x.x, top.x.z);
+        const glm::vec2 pivotXZ = closestPointOnPolyBoundary2D(hull, comXZ);
+        fallPivot_ = glm::vec3(pivotXZ.x, minSupportY, pivotXZ.y);
+        fallSupportLower_ = bestLower;
+
+        const glm::mat3 IinvW = invInertiaWorld(top);
+        const glm::vec3 tauA = glm::cross(top.x - fallPivot_, gravity_);
+        const glm::vec3 wDir = IinvW * tauA;
+        const float wl = glm::length(wDir);
+        if (wl > 1e-6f) {
+          fallAxis_ = wDir / wl;
+          fallHasPivot_ = true;
+        }
+      }
+
       if (fallRotMode_ == 1) {
-        // Mode A: give a small tilt + initial angular velocity to break symmetry.
+        // Mode A: tilt and kick around the gravity torque direction induced by the supporting surface.
         const float tilt = glm::radians(fallKickDeg_);
-        top.q = glm::angleAxis(tilt, glm::vec3(0.0f, 0.0f, 1.0f));
-        top.w = glm::vec3(0.0f, 0.0f, fallKickOmega_);
+        const glm::vec3 axis = fallHasPivot_ ? fallAxis_ : glm::vec3(0.0f, 0.0f, 1.0f);
+        top.q = glm::angleAxis(tilt, axis);
+        top.w = axis * fallKickOmega_;
       } else {
         top.q = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
         top.w = glm::vec3(0.0f);
@@ -314,13 +404,32 @@ void ContactGraphScene::simulateStep(float dt) {
   const glm::quat qPrev = top.q;
 
   if (fallRotMode_ == 2 && driveEnabled_) {
-    // Mode B: inject a weak off-center torque during free-fall to induce rotation.
-    const glm::vec3 rLocal(0.0f, top.halfExtents.y, top.halfExtents.z);
-    const glm::vec3 r = glm::rotate(top.q, rLocal);
-    const glm::mat3 IinvW = invInertiaWorld(top);
-    const glm::vec3 J = glm::vec3(vxCmd, 0.0f, 0.0f);
-    const glm::vec3 tau = glm::cross(r, J);
-    top.w += (fallTorqueGain_ * dt) * (IinvW * tau);
+    // Mode B: bias rotation using the last supporting surface, so the direction matches the lower box.
+    if (fallHasPivot_ && fallSupportLower_ >= 0) {
+      bool hasSupportContact = false;
+      const float topBottomY = top.x.y - boxHalf_.y;
+      for (const Contact& c : contacts_) {
+        if (c.upper == 2 && c.lower == fallSupportLower_) {
+          if (std::fabs(c.p.y - topBottomY) < 0.08f) {
+            hasSupportContact = true;
+            break;
+          }
+        }
+      }
+      if (hasSupportContact) {
+        const glm::mat3 IinvW = invInertiaWorld(top);
+        const glm::vec3 tauA = glm::cross(top.x - fallPivot_, gravity_);
+        top.w += (fallTorqueGain_ * dt) * (IinvW * tauA);
+      }
+    } else {
+      // Fallback: the previous heuristic around a top corner.
+      const glm::mat3 IinvW = invInertiaWorld(top);
+      const glm::vec3 rLocal = glm::vec3(+boxHalf_.x, +boxHalf_.y, +boxHalf_.z);
+      const glm::vec3 r = glm::mat3_cast(top.q) * rLocal;
+      const glm::vec3 J = glm::vec3(vxCmd, 0.0f, 0.0f);
+      const glm::vec3 tau = glm::cross(r, J);
+      top.w += (fallTorqueGain_ * dt) * (IinvW * tau);
+    }
   }
 
   // Integrate (semi-implicit Euler).
