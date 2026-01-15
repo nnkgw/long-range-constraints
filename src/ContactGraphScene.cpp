@@ -132,6 +132,107 @@ static void obbCornersWorld(const lrc::RigidBody& b, glm::vec3 corners[8]) {
 }
 
 
+static void aabbCornersWorld(const lrc::RigidBody& b, glm::vec3 corners[8]) {
+  const glm::vec3 h = b.halfExtents;
+  int i = 0;
+  for (int sx = -1; sx <= 1; sx += 2) {
+    for (int sy = -1; sy <= 1; sy += 2) {
+      for (int sz = -1; sz <= 1; sz += 2) {
+        corners[i++] = b.x + glm::vec3((float)sx * h.x, (float)sy * h.y, (float)sz * h.z);
+      }
+    }
+  }
+}
+
+static constexpr int kObbSamplePointCount = 26;
+
+static void obbSamplePointsWorld(const lrc::RigidBody& b, glm::vec3 out[kObbSamplePointCount]) {
+  const glm::mat3 R = glm::toMat3(b.q);
+  const glm::vec3 h = b.halfExtents;
+
+  int idx = 0;
+  auto emitLocal = [&](const glm::vec3& pLocal) {
+    out[idx++] = b.x + R * pLocal;
+  };
+
+  // 8 corners
+  for (int sx = -1; sx <= 1; sx += 2) {
+    for (int sy = -1; sy <= 1; sy += 2) {
+      for (int sz = -1; sz <= 1; sz += 2) {
+        emitLocal(glm::vec3((float)sx * h.x, (float)sy * h.y, (float)sz * h.z));
+      }
+    }
+  }
+
+  // 12 edge midpoints
+  // X edges: x=0, y=±h.y, z=±h.z
+  for (int sy = -1; sy <= 1; sy += 2) {
+    for (int sz = -1; sz <= 1; sz += 2) {
+      emitLocal(glm::vec3(0.0f, (float)sy * h.y, (float)sz * h.z));
+    }
+  }
+  // Y edges: y=0, x=±h.x, z=±h.z
+  for (int sx = -1; sx <= 1; sx += 2) {
+    for (int sz = -1; sz <= 1; sz += 2) {
+      emitLocal(glm::vec3((float)sx * h.x, 0.0f, (float)sz * h.z));
+    }
+  }
+  // Z edges: z=0, x=±h.x, y=±h.y
+  for (int sx = -1; sx <= 1; sx += 2) {
+    for (int sy = -1; sy <= 1; sy += 2) {
+      emitLocal(glm::vec3((float)sx * h.x, (float)sy * h.y, 0.0f));
+    }
+  }
+
+  // 6 face centers
+  emitLocal(glm::vec3(+h.x, 0.0f, 0.0f));
+  emitLocal(glm::vec3(-h.x, 0.0f, 0.0f));
+  emitLocal(glm::vec3(0.0f, +h.y, 0.0f));
+  emitLocal(glm::vec3(0.0f, -h.y, 0.0f));
+  emitLocal(glm::vec3(0.0f, 0.0f, +h.z));
+  emitLocal(glm::vec3(0.0f, 0.0f, -h.z));
+
+  // Safety: keep the list size stable.
+  if (idx != kObbSamplePointCount) {
+    // Do nothing; idx mismatch indicates a logic error in sampling.
+  }
+}
+
+static bool pointInsideObb(const lrc::RigidBody& b,
+                           const glm::vec3& pWorld,
+                           glm::vec3* outNWorld,
+                           float* outPenetration) {
+  const glm::mat3 R = glm::toMat3(b.q);
+  const glm::vec3 pLocal = glm::transpose(R) * (pWorld - b.x);
+  const glm::vec3 h = b.halfExtents;
+
+  if (std::fabs(pLocal.x) > h.x || std::fabs(pLocal.y) > h.y || std::fabs(pLocal.z) > h.z) {
+    return false;
+  }
+
+  const float dx = h.x - std::fabs(pLocal.x);
+  const float dy = h.y - std::fabs(pLocal.y);
+  const float dz = h.z - std::fabs(pLocal.z);
+
+  float best = dx;
+  glm::vec3 nLocal((pLocal.x >= 0.0f) ? 1.0f : -1.0f, 0.0f, 0.0f);
+
+  if (dy < best) {
+    best = dy;
+    nLocal = glm::vec3(0.0f, (pLocal.y >= 0.0f) ? 1.0f : -1.0f, 0.0f);
+  }
+  if (dz < best) {
+    best = dz;
+    nLocal = glm::vec3(0.0f, 0.0f, (pLocal.z >= 0.0f) ? 1.0f : -1.0f);
+  }
+
+  if (outNWorld) *outNWorld = R * nLocal;
+  if (outPenetration) *outPenetration = best;
+  return true;
+}
+
+
+
 ContactGraphScene::ContactGraphScene() {
   titleName_ = "Long Range Constraints - Phase D0";
   camPitch_ = 0.55f;
@@ -444,14 +545,15 @@ void ContactGraphScene::simulateStep(float dt) {
   constexpr float kSlop = 1e-4f;
 
   for (int it = 0; it < kIters; ++it) {
-    glm::vec3 corners[8];
-    obbCornersWorld(top, corners);
+    glm::vec3 samples[kObbSamplePointCount];
+    obbSamplePointsWorld(top, samples);
 
     // Ground
-    for (int c = 0; c < 8; ++c) {
-      float pen = groundY_ - corners[c].y;
+    for (int i = 0; i < kObbSamplePointCount; ++i) {
+      const glm::vec3 p = samples[i];
+      float pen = groundY_ - p.y;
       if (pen > 0.0f) {
-        solvePointPenetration(top, corners[c], glm::vec3(0.0f, 1.0f, 0.0f), pen + kSlop);
+        solvePointPenetration(top, p, glm::vec3(0.0f, 1.0f, 0.0f), pen + kSlop);
       }
     }
 
@@ -462,8 +564,9 @@ void ContactGraphScene::simulateStep(float dt) {
       const glm::vec3 bmin = s.x - s.halfExtents;
       const glm::vec3 bmax = s.x + s.halfExtents;
 
-      for (int c = 0; c < 8; ++c) {
-        const glm::vec3 p = corners[c];
+      // A) Push out top samples that end up inside the AABB.
+      for (int i = 0; i < kObbSamplePointCount; ++i) {
+        const glm::vec3 p = samples[i];
         if (p.x <= bmin.x || p.x >= bmax.x ||
             p.y <= bmin.y || p.y >= bmax.y ||
             p.z <= bmin.z || p.z >= bmax.z) {
@@ -489,7 +592,22 @@ void ContactGraphScene::simulateStep(float dt) {
 
         solvePointPenetration(top, p, n, best + kSlop);
       }
+
+      // B) Also handle the opposite containment case (static corners inside the OBB).
+      // This is important when the OBB overlaps an AABB edge/edge region without any OBB sample
+      // falling strictly inside the AABB.
+      glm::vec3 sc[8];
+      aabbCornersWorld(s, sc);
+      for (int i = 0; i < 8; ++i) {
+        glm::vec3 nWorld(0.0f);
+        float pen = 0.0f;
+        if (pointInsideObb(top, sc[i], &nWorld, &pen)) {
+          // For a fixed point inside the OBB, moving the OBB opposite to the outward normal expels it.
+          solvePointPenetration(top, sc[i], -nWorld, pen + kSlop);
+        }
+      }
     }
+
   }
 
   // Update velocities from the corrected pose.
