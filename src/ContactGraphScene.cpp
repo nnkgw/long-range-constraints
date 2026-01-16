@@ -402,13 +402,14 @@ void ContactGraphScene::usage() const {
   std::printf("  SPACE : toggle pause\n");
   std::printf("  R : reset scene\n");
   std::printf("  T : toggle top drive\n");
-  std::printf("  [ / ] : adjust drive amplitude\n");
-  std::printf("  ; / ' : adjust drive frequency\n");
+  std::printf("  A/D : apply small left/right impulse (velocity injection) to the top box\n");
+  std::printf("  [ / ] : adjust impulse magnitude\n");
+  std::printf("  ; / ' : adjust impulse decay\n");
   std::printf("  F : toggle falling when unsupported\n");
   std::printf("  M : cycle fall rotation mode (A: kick, B: torque)\n");
   std::printf("  ESC : quit\n");
   std::printf("  - Yellow points: dynamic (sliding) contacts (vt > eps).\n");
-  std::printf("  - A small horizontal drive moves the top body to make dyn contacts visible.");
+  std::printf("  - Key-driven impulses move the top body to make dyn contacts visible.\n");
 }
 
 void ContactGraphScene::buildScene() {
@@ -417,6 +418,7 @@ void ContactGraphScene::buildScene() {
   graphEdges_.clear();
 
   driveTime_ = 0.0f;
+  driveVxCmd_ = 0.0f;
   topFreeFall_ = false;
   topOnFloor_ = false;
   fallHasPivot_ = false;
@@ -484,6 +486,11 @@ void ContactGraphScene::buildScene() {
     bodies_[2].v = glm::vec3(0.0f);
   }
 
+  driveTime_ = 0.0f;
+  driveVxCmd_ = 0.0f;
+  topFreeFall_ = false;
+  topOnFloor_ = false;
+
   camPan_ = glm::vec3(0.0f, 0.0f, 0.0f);
   lastTms_ = 0;
   acc_ = 0.0f;
@@ -519,13 +526,13 @@ void ContactGraphScene::simulateStep(float dt) {
 
   lrc::RigidBody& top = bodies_[2];
 
-  // Horizontal drive (weak PD velocity injection) - matches the pre-fall behavior.
+  // Horizontal drive: key-driven velocity command.
+  // The command decays to zero so a key tap behaves like a small impulse.
   float vxCmd = 0.0f;
   if (driveEnabled_) {
-    float omega = 2.0f * 3.1415926535f * driveHz_;
-    float targetX = driveBasePos_.x + drivePosAmp_ * std::sin(omega * driveTime_);
-    float errorX = targetX - top.x.x;
-    vxCmd = clampf(driveKp_ * errorX, -driveVelAmp_, driveVelAmp_);
+    driveVxCmd_ *= std::exp(-driveHz_ * dt);
+    driveVxCmd_ = clampf(driveVxCmd_, -driveVelAmp_, driveVelAmp_);
+    vxCmd = driveVxCmd_;
   }
   if (topFreeFall_ && topOnFloor_) vxCmd = 0.0f;
   if (topFreeFall_ && topOnFloor_) {
@@ -540,11 +547,12 @@ void ContactGraphScene::simulateStep(float dt) {
   if (!driveAllowFall_) {
     topFreeFall_ = false;
     topOnFloor_ = false;
+  }
+
   fallHasPivot_ = false;
   fallSupportLower_ = -2;
   fallPivot_ = glm::vec3(0.0f);
   fallAxis_ = glm::vec3(0.0f, 0.0f, 1.0f);
-  }
 
   // --- Kinematic mode (top is supported / hasn't started free-fall yet)
   if (!topFreeFall_) {
@@ -899,6 +907,20 @@ void ContactGraphScene::keyboard(unsigned char key, int /*x*/, int /*y*/) {
 
   if (key == 't' || key == 'T') {
     driveEnabled_ = !driveEnabled_;
+    return;
+  }
+  if (key == 'a' || key == 'A') {
+    // Negative x impulse (velocity injection).
+    driveVxCmd_ = clampf(driveVxCmd_ - drivePosAmp_, -driveVelAmp_, driveVelAmp_);
+    return;
+  }
+  if (key == 'd' || key == 'D') {
+    // Positive x impulse (velocity injection).
+    driveVxCmd_ = clampf(driveVxCmd_ + drivePosAmp_, -driveVelAmp_, driveVelAmp_);
+    return;
+  }
+  if (key == 'x' || key == 'X') {
+    driveVxCmd_ = 0.0f;
     return;
   }
   if (key == 'f' || key == 'F') {

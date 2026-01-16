@@ -77,6 +77,7 @@ private:
   bool driveEnabled_ = true;
   bool driveAllowFall_ = true;
   float driveTime_ = 0.0f;
+  float driveVxCmd_ = 0.0f;
   bool topFreeFall_ = false;
   bool topOnFloor_ = false;
 
