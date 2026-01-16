@@ -795,12 +795,12 @@ void ContactGraphScene::simulateStep(float dt) {
     }
 
     if (topOnFloor_) {
-      top.v.x *= 0.1f;
-      top.v.z *= 0.1f;
-      top.v.y *= 0.01f;
-      top.w   *= 0.1f;
-      if (std::fabs(top.v.y) < 0.2f/*0.05f*/) top.v.y = 0.0f;
-      if (glm::length(top.w) < 0.2f) top.w = glm::vec3(0.0f);
+      top.v.x *= 0.001f;
+      top.v.z *= 0.001f;
+      top.v.y *= 0.001f;
+      top.w   *= 0.2f;
+      if (std::fabs(top.v.y) < 1.0f/*0.05f*/) top.v.y = 0.0f;
+      if (glm::length(top.w) < 0.5f) top.w = glm::vec3(0.0f);
     }
   }
 
