@@ -62,4 +62,10 @@ protected:
 
   // Scene name for window title.
   std::string titleName_ = "Chain";
+
+  // Cached extra string for the window title.
+  // This prevents one-shot updates (e.g., from a key press) from being
+  // immediately overwritten by the per-frame title refresh.
+  mutable std::string titleExtra_;
+  mutable bool hasTitleExtra_ = false;
 };

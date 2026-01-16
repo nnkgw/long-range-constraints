@@ -82,8 +82,24 @@ void ChainSceneBase::motion(int x, int y) {
 }
 
 void ChainSceneBase::updateWindowTitle(const char* extra) const {
+  // Latch the extra string so it stays visible even if the caller only
+  // updated it once (e.g., from keyboard input) and the per-frame refresh
+  // later calls updateWindowTitle() with no extra.
+  if (extra != nullptr) {
+    if (extra[0]) {
+      titleExtra_ = extra;
+      hasTitleExtra_ = true;
+    } else {
+      // Allow an explicit clear via updateWindowTitle("").
+      titleExtra_.clear();
+      hasTitleExtra_ = false;
+    }
+  }
+
+  const char* shownExtra = (hasTitleExtra_ && !titleExtra_.empty()) ? titleExtra_.c_str() : nullptr;
+
   char buf[512];
-  if (extra && extra[0]) {
+  if (shownExtra) {
     std::snprintf(buf, sizeof(buf),
                   "%s | dt=%.4f it=%d LRC=%s | sim %.2f ms | %s",
                   titleName_.c_str(),
@@ -91,7 +107,7 @@ void ChainSceneBase::updateWindowTitle(const char* extra) const {
                   iters_,
                   useLrc_ ? "ON" : "OFF",
                   lastSimMs_,
-                  extra);
+                  shownExtra);
   } else {
     std::snprintf(buf, sizeof(buf),
                   "%s | dt=%.4f it=%d LRC=%s | sim %.2f ms",
