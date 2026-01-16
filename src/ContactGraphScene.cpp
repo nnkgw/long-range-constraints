@@ -1007,43 +1007,110 @@ void ContactGraphScene::computeSupportingContacts() {
   for (Contact& c : contacts_) c.supporting = false;
   bodySupported_.assign(bodies_.size(), false);
 
-  // For each body, check whether its COM projection is inside the convex hull
-  // of "static" contact points supporting it from below (incl. floor).
-  for (int bi = 0; bi < (int)bodies_.size(); ++bi) {
-    std::vector<int> cand;
-    cand.reserve(16);
+  // Paper (Section 3.6): supporting contacts are determined bottom-to-top.
+  // - Start from floor contacts.
+  // - Then, a static contact becomes supporting if its (x,z) projection lies
+  //   inside the convex hull of the (x,z) projections of its adjacent supporting
+  //   contacts below it in the contact graph.
+  // After that, a body is supported if its COM projection lies inside the convex
+  // hull of its supporting contacts below it.
 
-    for (int ci = 0; ci < (int)contacts_.size(); ++ci) {
-      const Contact& c = contacts_[ci];
-      if (c.upper != bi) continue;
-      if (!c.isStatic) continue;
-      // Accept floor (lower == -1) and any lower body.
-      cand.push_back(ci);
-    }
+  const int n = (int)contacts_.size();
+  if (n <= 0) return;
 
-    if ((int)cand.size() < 3) continue;
+  // Build adjacency lists from the undirected contact graph edges.
+  std::vector<std::vector<int>> adj;
+  adj.resize(n);
+  for (const std::pair<int, int>& e : graphEdges_) {
+    const int a = e.first;
+    const int b = e.second;
+    if (a < 0 || a >= n || b < 0 || b >= n) continue;
+    adj[a].push_back(b);
+    adj[b].push_back(a);
+  }
 
+  // Process contacts from bottom to top (ascending y).
+  std::vector<int> order;
+  order.reserve(n);
+  for (int i = 0; i < n; ++i) order.push_back(i);
+  std::sort(order.begin(), order.end(), [&](int a, int b) {
+    return contacts_[a].p.y < contacts_[b].p.y;
+  });
+
+  // Base supporting set: static contacts against the floor.
+  for (int idx : order) {
+    Contact& c = contacts_[idx];
+    if (!c.isStatic) continue;
+    if (c.lower == -1) c.supporting = true;
+  }
+
+  // Propagate support upward.
+  const float epsBelow = 1e-4f;
+  for (int idx : order) {
+    Contact& c = contacts_[idx];
+    if (c.supporting) continue;
+    if (!c.isStatic) continue;
+    if (c.lower < 0) continue;
+
+    // Collect adjacent supporting contacts below this contact.
     std::vector<glm::vec2> pts;
-    pts.reserve(cand.size());
-    for (int idx : cand) {
-      const glm::vec3& p = contacts_[idx].p;
-      pts.push_back(glm::vec2(p.x, p.z));
+    pts.reserve(16);
+    for (int nb : adj[idx]) {
+      const Contact& a = contacts_[nb];
+      if (!a.supporting) continue;
+
+      // Only consider neighbors that involve the lower body of this contact.
+      const int lowerBody = c.lower;
+      const bool neighborOnLower = (a.upper == lowerBody) || (a.lower == lowerBody);
+      if (!neighborOnLower) continue;
+
+      // "Below" in the gravity direction.
+      if (a.p.y > c.p.y - epsBelow) continue;
+
+      pts.push_back(glm::vec2(a.p.x, a.p.z));
     }
+
+    if ((int)pts.size() < 3) continue;
 
     const std::vector<glm::vec2> hull = convexHull2D(std::move(pts));
     if (hull.size() < 3) continue;
 
-    const glm::vec2 c2(bodies_[bi].x.x, bodies_[bi].x.z);
-    if (!pointInConvexPolygon2D(hull, c2)) continue;
+    const glm::vec2 p2(c.p.x, c.p.z);
+    if (!pointInConvexPolygon2D(hull, p2)) continue;
+
+    c.supporting = true;
+  }
+
+  // Decide which bodies are supported using their supporting contacts below them.
+  std::vector<int> bodyOrder;
+  bodyOrder.reserve(bodies_.size());
+  for (int i = 0; i < (int)bodies_.size(); ++i) bodyOrder.push_back(i);
+  std::sort(bodyOrder.begin(), bodyOrder.end(), [&](int a, int b) {
+    return bodies_[a].x.y < bodies_[b].x.y;
+  });
+
+  for (int bi : bodyOrder) {
+    std::vector<glm::vec2> pts;
+    pts.reserve(16);
+    for (const Contact& c : contacts_) {
+      if (c.upper != bi) continue;
+      if (!c.supporting) continue;
+      pts.push_back(glm::vec2(c.p.x, c.p.z));
+    }
+
+    if ((int)pts.size() < 3) continue;
+
+    const std::vector<glm::vec2> hull = convexHull2D(std::move(pts));
+    if (hull.size() < 3) continue;
+
+    const glm::vec2 com2(bodies_[bi].x.x, bodies_[bi].x.z);
+    if (!pointInConvexPolygon2D(hull, com2)) continue;
 
     bodySupported_[bi] = true;
-
-    // Mark supporting contacts for visualization.
-    for (int idx : cand) {
-      contacts_[idx].supporting = true;
-    }
   }
 }
+
+
 
 void ContactGraphScene::addBoxFloorContacts(int bodyIdx) {
   const lrc::RigidBody& b = bodies_[bodyIdx];
