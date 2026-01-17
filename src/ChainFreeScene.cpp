@@ -51,6 +51,8 @@ ChainFreeScene::ChainFreeScene() {
 void ChainFreeScene::usage() const {
   std::printf("\n");
   std::printf("Phase C1 (Free chain + Follow Cam)\n");
+  std::printf("  Mouse LMB: orbit, RMB: pan, wheel: zoom (freeglut only)\n");
+  std::printf("  =/- : zoom (keyboard)\n");
   std::printf("  3 : switch to this scene\n");
   std::printf("  L : toggle LRC\n");
   std::printf("  V : toggle hierarchy visualization\n");

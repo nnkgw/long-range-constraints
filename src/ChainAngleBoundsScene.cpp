@@ -48,6 +48,7 @@ void ChainAngleBoundsScene::usage() const {
   std::printf("\n");
   std::printf("Phase B (Angle limits -> Distance bounds)\n");
   std::printf("  Mouse LMB: orbit, RMB: pan, wheel: zoom\n");
+  std::printf("  =/-: zoom (keyboard fallback)\n");
   std::printf("  [ / ] : iterations\n");
   std::printf("  L     : toggle LRC\n");
   std::printf("  , / . : joint limit (deg)\n");

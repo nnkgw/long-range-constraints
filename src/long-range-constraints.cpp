@@ -3,6 +3,7 @@
 
 #include "GlutCompat.h"
 #include "SceneManager.h"
+#include "ChainSceneBase.h"
 #include "ChainLRCScene.h"
 #include "ChainAngleBoundsScene.h"
 #include "ChainFreeScene.h"
@@ -42,6 +43,21 @@ static void keyboard(unsigned char key, int x, int y) {
   if (key == '4') {
     g_sceneManager.setActive(3);
     return;
+  }
+
+  // Global camera zoom fallback for GLUT implementations that do not provide mouse wheel events.
+  if (key == '-' || key == '=' || key == '+') {
+    IScene* cur = g_sceneManager.active();
+    ChainSceneBase* base = cur ? dynamic_cast<ChainSceneBase*>(cur) : nullptr;
+    if (base) {
+      if (key == '-') {
+        base->zoomCamera(1.1f);
+      } else {
+        base->zoomCamera(0.9f);
+      }
+      glutPostRedisplay();
+      return;
+    }
   }
 
   IScene* s = g_sceneManager.active();

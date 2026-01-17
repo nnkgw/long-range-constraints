@@ -11,6 +11,9 @@ public:
   ChainSceneBase();
   ~ChainSceneBase() override = default;
 
+  // Camera helper that works even when mouse wheel events are not available.
+  void zoomCamera(float scale);
+
   void reshape(int w, int h) override;
   void idle() override;
   void mouse(int button, int state, int x, int y) override;

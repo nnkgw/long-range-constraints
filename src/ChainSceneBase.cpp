@@ -8,6 +8,12 @@
 ChainSceneBase::ChainSceneBase() {
 }
 
+void ChainSceneBase::zoomCamera(float scale) {
+  camDist_ *= scale;
+  if (camDist_ < 0.2f) camDist_ = 0.2f;
+  if (camDist_ > 200.0f) camDist_ = 200.0f;
+}
+
 void ChainSceneBase::reshape(int w, int h) {
   if (h < 1) h = 1;
   glViewport(0, 0, w, h);
@@ -53,8 +59,8 @@ void ChainSceneBase::mouse(int button, int state, int x, int y) {
   if (button == GLUT_RIGHT_BUTTON) rbtn_ = (state == GLUT_DOWN);
 
 #if defined(LRC_HAS_FREEGLUT)
-  if (button == 3 && state == GLUT_DOWN) camDist_ *= 0.9f;
-  if (button == 4 && state == GLUT_DOWN) camDist_ *= 1.1f;
+  if (button == 3 && state == GLUT_DOWN) zoomCamera(0.9f);
+  if (button == 4 && state == GLUT_DOWN) zoomCamera(1.1f);
 #endif
 
   lastMouseX_ = x;

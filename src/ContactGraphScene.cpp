@@ -395,6 +395,8 @@ ContactGraphScene::ContactGraphScene() {
 
 void ContactGraphScene::usage() const {
   std::printf("\n");
+  std::printf("  Mouse LMB: orbit, RMB: pan, wheel: zoom (freeglut only)\n");
+  std::printf("  =/- : zoom (keyboard)\n");
   std::printf("Phase D1 (Contact graphs - Step0)\n");
   std::printf("  4 : switch to this scene\n");
   std::printf("  G : toggle contact graph edges\n");
