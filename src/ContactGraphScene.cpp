@@ -572,21 +572,27 @@ void ContactGraphScene::simulateStep(float dt) {
     if (driveAllowFall_) {
       // Collect support contact points under the top.
       std::vector<glm::vec2> supportXZ;
-    std::vector<int> supportLower;
-      float minSupportY = 1e9f;
+      std::vector<int> supportLower;
+      float supportY = -std::numeric_limits<float>::infinity();
 
-      float topBottomY = top.x.y - boxHalf_.y;
-
+      // Use the highest supporting surface to avoid snapping/jitter when overlapping multiple levels.
       for (const Contact& c : contacts_) {
         if (c.upper != 2) continue;
-        if (c.lower == -1) continue; // ground doesn't directly support the top in this setup
+        if (c.lower < 0) continue;
+        if (c.n.y < 0.5f) continue;
+        supportY = std::max(supportY, c.p.y);
+      }
 
-        // Only consider contacts close to the bottom face of the top.
-        if (std::fabs(c.p.y - topBottomY) > 0.05f) continue;
-
-        supportXZ.push_back(glm::vec2(c.p.x, c.p.z));
-        supportLower.push_back(c.lower);
-        minSupportY = std::min(minSupportY, c.p.y);
+      if (std::isfinite(supportY)) {
+        const float epsY = 1e-3f;
+        for (const Contact& c : contacts_) {
+          if (c.upper != 2) continue;
+          if (c.lower < 0) continue;
+          if (c.n.y < 0.5f) continue;
+          if (std::fabs(c.p.y - supportY) > epsY) continue;
+          supportXZ.push_back(glm::vec2(c.p.x, c.p.z));
+          supportLower.push_back(c.lower);
+        }
       }
 
       bool supportedForFall = false;
@@ -596,8 +602,8 @@ void ContactGraphScene::simulateStep(float dt) {
       }
 
       // If supported, keep the top resting on the supports; otherwise start free-fall.
-      if (supportedForFall) {
-        top.x.y = minSupportY + boxHalf_.y;
+      if (supportedForFall && std::isfinite(supportY)) {
+        top.x.y = supportY + boxHalf_.y;
         top.v.y = 0.0f;
 
         rebuildContacts();
@@ -614,7 +620,7 @@ void ContactGraphScene::simulateStep(float dt) {
       fallPivot_ = glm::vec3(0.0f);
       fallAxis_ = glm::vec3(0.0f, 0.0f, 1.0f);
 
-      if (minSupportY < 1e8f && !supportXZ.empty()) {
+      if (std::isfinite(supportY) && !supportXZ.empty()) {
         int bestLower = -1;
         int bestCount = 0;
         std::vector<int> counts((int)bodies_.size(), 0);
@@ -641,7 +647,7 @@ void ContactGraphScene::simulateStep(float dt) {
 
         const glm::vec2 comXZ(top.x.x, top.x.z);
         const glm::vec2 pivotXZ = closestPointOnPolyBoundary2D(hull, comXZ);
-        fallPivot_ = glm::vec3(pivotXZ.x, minSupportY, pivotXZ.y);
+        fallPivot_ = glm::vec3(pivotXZ.x, supportY, pivotXZ.y);
         fallSupportLower_ = bestLower;
 
         const glm::mat3 IinvW = invInertiaWorld(top);
@@ -653,7 +659,6 @@ void ContactGraphScene::simulateStep(float dt) {
           fallHasPivot_ = true;
         }
       }
-
       if (fallRotMode_ == 1) {
         // Mode A: tilt and kick around the gravity torque direction induced by the supporting surface.
         const float tilt = glm::radians(fallKickDeg_);
@@ -673,6 +678,8 @@ void ContactGraphScene::simulateStep(float dt) {
   // --- Dynamic mode (top free-falls with collisions)
   const glm::vec3 xPrev = top.x;
   const glm::quat qPrev = top.q;
+
+  bool hadPenetration = false;
 
   if (fallRotMode_ == 2 && driveEnabled_) {
     // Mode B: bias rotation using the last supporting surface, so the direction matches the lower box.
@@ -723,6 +730,7 @@ void ContactGraphScene::simulateStep(float dt) {
       const glm::vec3 p = samples[i];
       float pen = groundY_ - p.y;
       if (pen > 0.0f) {
+        hadPenetration = true;
         solvePointPenetration(top, p, glm::vec3(0.0f, 1.0f, 0.0f), pen + kSlop);
       }
     }
@@ -735,7 +743,10 @@ void ContactGraphScene::simulateStep(float dt) {
       const glm::vec3 bmin = s.x - s.halfExtents;
       const glm::vec3 bmax = s.x + s.halfExtents;
       const bool didFacePush = pushObbOutOfAabb_SAT(top, s, kSlop);
-      if (didFacePush) continue;
+      if (didFacePush) {
+        hadPenetration = true;
+        continue;
+      }
 
       // A) Push out top samples that end up inside the AABB.
       for (int i = 0; i < kObbSamplePointCount; ++i) {
@@ -747,6 +758,8 @@ void ContactGraphScene::simulateStep(float dt) {
         }
 
         // Point is inside the AABB -> push it out along the closest face normal.
+        hadPenetration = true;
+
         float dx0 = p.x - bmin.x;
         float dx1 = bmax.x - p.x;
         float dy0 = p.y - bmin.y;
@@ -775,6 +788,7 @@ void ContactGraphScene::simulateStep(float dt) {
         glm::vec3 nWorld(0.0f);
         float pen = 0.0f;
         if (pointInsideObb(top, sc[i], &nWorld, &pen)) {
+          hadPenetration = true;
           // For a fixed point inside the OBB, moving the OBB opposite to the outward normal expels it.
           solvePointPenetration(top, sc[i], -nWorld, pen + kSlop);
         }
@@ -786,6 +800,13 @@ void ContactGraphScene::simulateStep(float dt) {
   // Update velocities from the corrected pose.
   top.v = (top.x - xPrev) / dt;
   top.w = lrc::quatToOmegaWorld(qPrev, top.q, dt);
+
+  if (hadPenetration) {
+    // Positional projection can inject energy; apply mild damping so the stack settles.
+    constexpr float kContactVelDamp = 0.98f;
+    top.v *= kContactVelDamp;
+    top.w *= kContactVelDamp;
+  }
 
   // Once the top has fallen and settled onto the floor, stop horizontal drifting.
   if (topFreeFall_) {
