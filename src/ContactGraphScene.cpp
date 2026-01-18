@@ -836,6 +836,34 @@ void ContactGraphScene::simulateStep(float dt) {
   }
 
   rebuildContacts();
+
+  // Step 3: If the top body is classified as "supported" by the bottom-to-top + hull test,
+  // snap it to the supporting surface and exit free-fall. This is a simple stand-in for
+  // adding long-range constraints to the ground (paper Section 3.6).
+  if (topFreeFall_ && (int)bodySupported_.size() > 2 && bodySupported_[2]) {
+    lrc::RigidBody& top = bodies_[2];
+
+    float supportY = -1e30f;
+    for (int ci = 0; ci < (int)contacts_.size(); ++ci) {
+      const Contact& c = contacts_[ci];
+      if (c.upper != 2) continue;
+      if (!c.supporting) continue;
+      if (c.n.y < 0.5f) continue;
+      supportY = std::max(supportY, c.p.y);
+    }
+
+    if (supportY > -1e20f) {
+      // Avoid snapping while it is still moving fast.
+      if (std::fabs(top.v.y) < 0.4f && glm::length(top.w) < 1.5f) {
+        top.x.y = supportY + top.halfExtents.y;
+        top.v   = glm::vec3(0.0f);
+        top.w   = glm::vec3(0.0f);
+        topFreeFall_ = false;
+        topOnFloor_ = false;
+        rebuildContacts();
+      }
+    }
+  }
 }
 
 void ContactGraphScene::drawSceneContents() {
